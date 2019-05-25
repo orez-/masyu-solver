@@ -4,6 +4,9 @@ import dataclasses
 import enum
 import textwrap
 
+import attr
+import frozendict
+
 
 WHITE = object()
 BLACK = object()
@@ -46,7 +49,7 @@ class ContradictionException(Exception):
     """The attempted operation would result in a contradiction in board state!"""
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class CellLine:
     is_set: {Direction}
     cannot_set: {Direction}
@@ -185,31 +188,37 @@ class CellLine:
     def is_done(self):
         return len(self.is_set) + len(self.cannot_set) == 4
 
+    def could_set(self):
+        return frozenset(Direction) - self.is_set - self.cannot_set
+
 
 @dataclasses.dataclass
 class LineSegment:
     ...
 
 
-@dataclasses.dataclass
+@attr.s(frozen=True)
 class Board:
-    width: int
-    height: int
-    circles: {(int, int): bool}
-    cell_lines: {(int, int): CellLine} = None
-    line_segments: [LineSegment] = dataclasses.field(init=False)
+    width: int = attr.ib()
+    height: int = attr.ib()
+    circles: {(int, int): bool} = attr.ib(converter=frozendict.frozendict)
+    cell_lines: {(int, int): CellLine} = attr.ib(converter=frozendict.frozendict)
+    line_segments: [LineSegment] = attr.ib(init=False, converter=frozendict.frozendict)
 
-    def __post_init__(self):
-        if self.cell_lines is None:
-            self.cell_lines = {
-                (x, y): CellLine(
-                    is_set=frozenset(),
-                    cannot_set=self._edges_at(x, y),
-                )
-                for y in range(self.height)
-                for x in range(self.width)
-            }
-        self.line_segments = []
+    @cell_lines.default
+    def _(self):
+        return {
+            (x, y): CellLine(
+                is_set=frozenset(),
+                cannot_set=self._edges_at(x, y),
+            )
+            for y in range(self.height)
+            for x in range(self.width)
+        }
+
+    @line_segments.default
+    def _(self):
+        return []
 
     def _edges_at(self, x, y):
         edges = set()
@@ -226,6 +235,13 @@ class Board:
     def set_direction(self, x, y, direction):
         old_cell = self.cell_lines[x, y]
         new_cell = old_cell.set_direction(direction)
+        if new_cell == old_cell:
+            return self
+        return self._propagate_change({(x, y): new_cell})
+
+    def disallow_direction(self, x, y, direction):
+        old_cell = self.cell_lines[x, y]
+        new_cell = old_cell.disallow_direction(direction)
         if new_cell == old_cell:
             return self
         return self._propagate_change({(x, y): new_cell})
@@ -327,23 +343,25 @@ def apply_black(board, x, y):
         return board
 
     could_dirs = set()
-    for direction in frozenset(Direction) - cell.is_set - cell.cannot_set:
-        mx, my = direction.move(x, y)
+    for direction in cell.could_set():
         with contextlib.suppress(ContradictionException):
-            new_board = board.set_direction(x, y, direction)
-            new_board.set_through(mx, my)
+            set_black_leg(board, x, y, direction)
             could_dirs.add(direction)
 
     for direction in could_dirs:
         if direction.opposite() not in could_dirs:
-            mx, my = direction.move(x, y)
-            board = board.set_direction(x, y, direction)
-            board = board.set_through(mx, my)
+            board = set_black_leg(board, x, y, direction)
 
     return board
 
 
-def solve(board):
+def set_black_leg(board, x, y, direction):
+    mx, my = direction.move(x, y)
+    board = board.set_direction(x, y, direction)
+    return board.set_through(mx, my)
+
+
+def solve_known_constraints(board):
     old_board = None
     while old_board != board:
         old_board = board
@@ -353,6 +371,60 @@ def solve(board):
             else:
                 board = apply_black(board, x, y)
     return board
+
+
+# def _next_guess(board):
+#     for (x, y), circle in board.circles.items():
+#         if circle not is BLACK:
+#             continue
+#         cell = board.cell_lines[x, y]
+#         for direction in cell.could_set():
+#             with contextlib.suppress(ContradictionException):
+#                 board = set_black_leg(board, x, y, direction)
+#                 yield solve_known_constraints(board)
+
+# {
+#     (x, y, d): {
+#         board: {
+#             (x, y, d): {
+#                 board:
+#             }
+#         }
+#     }
+# }
+
+# if a xyd group runs out of boards, nuke the parent board (but no further)
+# if a xyd group has one board, replace the parent board with that board.
+
+
+def _spot_direction_options(board, x, y, direction):
+    with contextlib.suppress(ContradictionException):
+        yield solve_known_constraints(board.set_direction(x, y, direction))
+
+    with contextlib.suppress(ContradictionException):
+        yield solve_known_constraints(board.disallow_direction(x, y, direction))
+
+
+UNEXPLORED = object()
+
+
+def lookahead_solve(board):
+    board = solve_known_constraints(board)
+
+    next_possibilities = {}
+    for (x, y), cell in board.cell_lines.items():
+        for direction in cell.could_set():
+            boards = {
+                next_board: UNEXPLORED
+                for next_board in _spot_direction_options(board, x, y, direction)
+            }
+            if len(boards) == 1:
+                next_board, = boards
+                return next_board
+            if not boards:
+                raise ContradictionException
+            next_possibilities[x, y, direction] = boards
+    return next_possibilities
 
 
 # display shit
@@ -441,7 +513,14 @@ def main():
     board = board_from_string(board_str)
     print(print_board(board))
 
-    board = solve(board)
+    board = solve_known_constraints(board)
+    print(print_big_board(board))
+
+    next_board = lookahead_solve(board)
+    while not isinstance(next_board, dict):
+        board = next_board
+        print(print_big_board(board))
+        next_board = lookahead_solve(board)
     print(print_big_board(board))
 
 

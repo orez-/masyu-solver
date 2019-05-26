@@ -51,7 +51,9 @@ class ContradictionException(Exception):
 
 class LoopException(Exception):
     """We've created a loop! Either we've solved the board, or we've created a contradiction."""
+
     def __init__(self, loop_coords):
+        super().__init__(loop_coords)
         self._loop_coords = loop_coords
 
     def validate_win(self, circles):
@@ -83,10 +85,7 @@ class CellLine:
             cannot_set = frozenset(Direction) - is_set
         elif len(cannot_set) == 2:
             is_set = frozenset(Direction) - cannot_set
-        return CellLine(
-            is_set=frozenset(is_set),
-            cannot_set=frozenset(cannot_set),
-        )
+        return CellLine(is_set=frozenset(is_set), cannot_set=frozenset(cannot_set))
 
     def disallow_direction(self, direction):
         """
@@ -108,10 +107,7 @@ class CellLine:
             is_set = set(Direction) - cannot_set
         elif len(cannot_set) == 3:
             cannot_set = Direction
-        return CellLine(
-            is_set=frozenset(is_set),
-            cannot_set=frozenset(cannot_set),
-        )
+        return CellLine(is_set=frozenset(is_set), cannot_set=frozenset(cannot_set))
 
     def get_through(self):
         """
@@ -137,30 +133,25 @@ class CellLine:
         if num_cannot_set == 1:
             one, = self.cannot_set
             cannot_set = frozenset({one, one.opposite()})
-            return CellLine(
-                is_set=frozenset(Direction) - cannot_set,
-                cannot_set=cannot_set,
-            )
+            return CellLine(is_set=frozenset(Direction) - cannot_set, cannot_set=cannot_set)
         if num_cannot_set == 2:
             is_set = one, other = frozenset(Direction) - self.cannot_set
             if one.opposite() != other:
                 raise ContradictionException(f"No straight path exists through {self}")
-            return CellLine(
-                is_set=is_set,
-                cannot_set=self.cannot_set,
-            )
+            return CellLine(is_set=is_set, cannot_set=self.cannot_set)
         if num_cannot_set == 4:
             raise ContradictionException(f"{self} must be blank")
 
-        assert num_cannot_set == 0, (
-            f"expected no `cannot_set`, found {num_cannot_set} ({self.cannot_set})")
+        assert (
+            num_cannot_set == 0
+        ), f"expected no `cannot_set`, found {num_cannot_set} ({self.cannot_set})"
 
         # We know nothing about this cell.
         return self
 
     def get_bent(self):  # 💁‍♀
         """
-        Return the transformation of this CellLine assuming the line will pass straight through.
+        Return the transformation of this CellLine assuming the line will bend.
 
         If there is not enough information to apply this transformation any possible constraints
         will be applied instead. If no constraints can be applied the original CellLine is returned
@@ -186,16 +177,14 @@ class CellLine:
             is_set = one, other = frozenset(Direction) - self.cannot_set
             if one.opposite() == other:
                 raise ContradictionException(f"No bent path exists through {self}")
-            return CellLine(
-                is_set=is_set,
-                cannot_set=self.cannot_set,
-            )
+            return CellLine(is_set=is_set, cannot_set=self.cannot_set)
         if num_cannot_set == 4:
             raise ContradictionException(f"{self} must be blank")
 
         # 2-case should be handled by `num_set == 2` above.
-        assert num_cannot_set == 0, (
-            f"expected no `cannot_set`, found {num_cannot_set} ({self.cannot_set})")
+        assert (
+            num_cannot_set == 0
+        ), f"expected no `cannot_set`, found {num_cannot_set} ({self.cannot_set})"
 
         # We know nothing about this cell.
         return self
@@ -238,11 +227,7 @@ def _loop_path(coord, direction, cell_lines):
 
 def _extend_line_segments(line_segments, cell_lines):
     """Return an updated list of all known line segments with any additions they have accrued."""
-    coord_lookup = {
-        coord: seg
-        for seg in line_segments
-        for coord in [seg.start, seg.end]
-    }
+    coord_lookup = {coord: seg for seg in line_segments for coord in [seg.start, seg.end]}
     seen_segs = set()
     new_segs = []
     for segment in line_segments:
@@ -265,7 +250,9 @@ def _extend_line_segments(line_segments, cell_lines):
             # Follow that end
             next_dir = cell.other_out(segment_direction)
             iterator = SwappableIterator(_loop_path(coord, next_dir, cell_lines))
-            for coord, next_dir in iterator:
+            # It's *extremely* intentional that we're redefining `coord` here,
+            # and I'm only *slightly* remorseful about it.
+            for coord, next_dir in iterator:  # pylint: disable=redefined-outer-name
                 if coord in coord_lookup:
                     merge_seg = coord_lookup[coord]
                     # Check if we looped back on ourselves.
@@ -323,13 +310,15 @@ def _discover_line_segments(cell_lines, seen=()):
             loop.add(end)
 
         seen |= loop
-        line_segments.append(LineSegment(
-            start=start,
-            start_direction=back_dir,
-            end=end,
-            end_direction=forward_dir,
-            contains=loop,
-        ))
+        line_segments.append(
+            LineSegment(
+                start=start,
+                start_direction=back_dir,
+                end=end,
+                end_direction=forward_dir,
+                contains=loop,
+            )
+        )
 
     return tuple(line_segments)
 
@@ -347,10 +336,7 @@ class Board:
     @cell_lines.default
     def _(self):
         return {
-            (x, y): CellLine(
-                is_set=frozenset(),
-                cannot_set=self._edges_at(x, y),
-            )
+            (x, y): CellLine(is_set=frozenset(), cannot_set=self._edges_at(x, y))
             for y in range(self.height)
             for x in range(self.width)
         }
@@ -448,8 +434,11 @@ class Board:
 
 
 class SwappableIterator:
+    """
+    Overwritable iterator proxy.
+    """
     def __init__(self, iterator):
-        self._iterator = iterator
+        self._iterator = iter(iterator)
 
     def __iter__(self):
         return self
@@ -457,8 +446,12 @@ class SwappableIterator:
     def __next__(self):
         return next(self._iterator)
 
-    def swap(self, iterator):
-        self._iterator = iterator
+    def swap(self, iterable):
+        """
+        Discard the current iterator and start yielding from `iterable` instead.
+        """
+        self._iterator = iter(iterable)
+
 
 # solver shit
 
@@ -593,6 +586,7 @@ def lookahead_solve(board):
 
 # display shit
 
+
 def board_from_string(board_str):
     board_lines = textwrap.dedent(board_str.rstrip().strip('\n')).split('\n')
 
@@ -631,6 +625,7 @@ INNER_CELL_LINE = {
     frozenset({Direction.Right, Direction.Up}): '└',
     frozenset({Direction.Right, Direction.Down}): '┌',
 }
+
 
 def print_big_board(board):
     # ┌┬┐

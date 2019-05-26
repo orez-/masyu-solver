@@ -56,10 +56,18 @@ class LoopException(Exception):
         super().__init__(loop_coords)
         self._loop_coords = loop_coords
 
-    def validate_win(self, circles):
+    def validate_solved(self, circles):
         """Ensure that the loop touches all circles."""
         if not all(circle_coord in self._loop_coords for circle_coord in circles):
             raise ContradictionException("Closed loop does not contain all circles") from self
+
+
+class SolvedException(Exception):
+    """The board is solved!"""
+
+    def __init__(self, board):
+        super().__init__()
+        self.board = board
 
 
 @dataclasses.dataclass(frozen=True)
@@ -351,8 +359,16 @@ class Board:
             seen = frozenset().union(*(seg.contains for seg in line_segments))
             line_segments += _discover_line_segments(cell_lines, seen)
         except LoopException as exc:
-            exc.validate_win(self.circles)
-            raise NotImplementedError("winning")
+            exc.validate_solved(self.circles)
+            raise SolvedException(
+                Board(
+                    width=self.width,
+                    height=self.height,
+                    circles=self.circles,
+                    cell_lines=cell_lines,
+                    line_segments=[],
+                ),
+            )
 
         return Board(
             width=self.width,
@@ -666,21 +682,30 @@ def print_big_board(board):
     return ''.join(board_str)
 
 
+def solve(board):
+    try:
+        board = solve_known_constraints(board)
+        print(print_big_board(board))
+
+        next_board = lookahead_solve(board)
+        while not isinstance(next_board, dict):
+            board = next_board
+            print(print_big_board(board))
+            next_board = lookahead_solve(board)
+        # print(next_board)
+    except SolvedException as exc:
+        return exc.board
+    return None
+
+
 def main():
     # < redacted >
     board_str = ...
     board = board_from_string(board_str)
-    print(print_board(board))
-
-    board = solve_known_constraints(board)
     print(print_big_board(board))
-
-    next_board = lookahead_solve(board)
-    while not isinstance(next_board, dict):
-        board = next_board
-        print(print_big_board(board))
-        next_board = lookahead_solve(board)
-    print(print_big_board(board))
+    solved_board = solve(board)
+    if solved_board:
+        print(print_big_board(solved_board))
 
 
 if __name__ == '__main__':

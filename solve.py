@@ -49,6 +49,17 @@ class ContradictionException(Exception):
     """The attempted operation would result in a contradiction in board state!"""
 
 
+class LoopException(Exception):
+    """We've created a loop! Either we've solved the board, or we've created a contradiction."""
+    def __init__(self, loop_coords):
+        self._loop_coords = loop_coords
+
+    def validate_win(self, circles):
+        """Ensure that the loop touches all circles."""
+        if not all(circle_coord in self._loop_coords for circle_coord in circles):
+            raise ContradictionException("Closed loop does not contain all circles") from self
+
+
 @dataclasses.dataclass(frozen=True)
 class CellLine:
     is_set: {Direction}
@@ -203,8 +214,124 @@ class CellLine:
 @attr.s(frozen=True)
 class LineSegment:
     start: (int, int) = attr.ib()
+    start_direction: Direction = attr.ib()
     end: (int, int) = attr.ib()
+    end_direction: Direction = attr.ib()
     contains: frozenset = attr.ib(converter=frozenset)
+
+    def other_end(self, coord):
+        if coord == self.start:
+            return self.end, self.end_direction
+        return self.start, self.start_direction
+
+
+def _loop_path(coord, direction, cell_lines):
+    x, y = coord
+    # while you've got somewhere to go, go there, poop out where you are,
+    # and figure out where to go next.
+    while direction:
+        x, y = direction.move(x, y)
+        direction = direction.opposite()
+        yield (x, y), direction
+        direction = cell_lines[x, y].other_out(direction)
+
+
+def _extend_line_segments(line_segments, cell_lines):
+    """Return an updated list of all known line segments with any additions they have accrued."""
+    coord_lookup = {
+        coord: seg
+        for seg in line_segments
+        for coord in [seg.start, seg.end]
+    }
+    seen_segs = set()
+    new_segs = []
+    for segment in line_segments:
+        if segment in seen_segs:
+            continue
+        seen_segs.add(segment)
+
+        loop = set(segment.contains)
+        changed_ends = {}
+
+        segment_ends = [
+            ('start', segment.start, segment.start_direction),
+            ('end', segment.end, segment.end_direction),
+        ]
+        for side, coord, segment_direction in segment_ends:
+            # If something added on to one end
+            cell = cell_lines[coord]
+            if len(cell.is_set) == 1:
+                continue
+            # Follow that end
+            next_dir = cell.other_out(segment_direction)
+            iterator = SwappableIterator(_loop_path(coord, next_dir, cell_lines))
+            for coord, next_dir in iterator:
+                if coord in coord_lookup:
+                    merge_seg = coord_lookup[coord]
+                    # Check if we looped back on ourselves.
+                    if merge_seg == segment:
+                        raise LoopException(loop)
+                    # Otherwise, quick consume the line segment
+                    seen_segs.add(merge_seg)
+                    loop |= merge_seg.contains
+                    coord, next_dir = merge_seg.other_end(coord)
+                    move_dir = cell_lines[coord].other_out(next_dir)
+                    iterator.swap(_loop_path(coord, move_dir, cell_lines))
+                else:
+                    loop.add(coord)
+            changed_ends[side] = coord
+            changed_ends[f"{side}_direction"] = next_dir
+
+        new_segs.append(
+            attr.evolve(segment, contains=loop, **changed_ends) if changed_ends else segment
+        )
+    return tuple(new_segs)
+
+
+def _discover_line_segments(cell_lines, seen=()):
+    """
+    Find new line segments based on `cell_lines`.
+
+    Do not check cells with coordinates in `seen`.
+    """
+    seen = set(seen)
+    line_segments = []
+    for coord, cell in cell_lines.items():
+        # Skip cells we've already seen, or that have no lines.
+        if coord in seen or not cell.is_set:
+            continue
+
+        loop = {coord}
+        # Backward, and check for closed loop.
+        # If there is no backward we're already at the start
+        start = coord
+        if len(cell.is_set) == 1:
+            [forward_dir] = [back_dir] = cell.is_set
+        else:
+            [forward_dir, back_dir] = cell.is_set
+            for start, back_dir in _loop_path(coord, back_dir, cell_lines):
+                if start in loop:
+                    # We've got a closed loop! This is exceptional!
+                    # We're definitely either done or wrong.
+                    # Either way, stop what you're doing and say something!
+                    raise LoopException(loop)
+                loop.add(start)
+
+        # Forward!
+        end = coord
+        for end, forward_dir in _loop_path(coord, forward_dir, cell_lines):
+            loop.add(end)
+
+        seen |= loop
+        line_segments.append(LineSegment(
+            start=start,
+            start_direction=back_dir,
+            end=end,
+            end_direction=forward_dir,
+            contains=loop,
+        ))
+
+    return tuple(line_segments)
 
 
 @attr.s(frozen=True)
@@ -213,7 +340,9 @@ class Board:
     height: int = attr.ib()
     circles: {(int, int): bool} = attr.ib(converter=frozendict.frozendict)
     cell_lines: {(int, int): CellLine} = attr.ib(converter=frozendict.frozendict)
-    line_segments: [LineSegment] = attr.ib(init=False, cmp=False)
+    # Bookkeep-y list of line segments. Constructed from `cell_lines`,
+    # but nice to track for optimization purposes.
+    line_segments: [LineSegment] = attr.ib(cmp=False)
 
     @cell_lines.default
     def _(self):
@@ -228,52 +357,24 @@ class Board:
 
     @line_segments.default
     def _(self):
-        # TODO: optimize by regenerating from previous `line_segments`
-        seen = set()
-        line_segments = []
-        for coord, cell in self.cell_lines.items():
-            # Skip cells we've already seen, or that have no lines.
-            if coord in seen or not cell.is_set:
-                continue
+        return _discover_line_segments(self.cell_lines)
 
-            loop = {coord}
-            # Backward, and check for closed loop.
-            # If there is no backward we're already at the start
-            if len(cell.is_set) == 1:
-                [forward_dir] = cell.is_set
-            else:
-                [forward_dir, back_dir] = cell.is_set
-                for coord in self._loop_path(coord, back_dir):
-                    if coord in loop:
-                        # We've got a closed loop!
-                        # If it touches all circles, we can call this a win.
-                        # Otherwise, contradiction!
-                        if all(circle_coord in loop for circle_coord in self.circles):
-                            return ()
-                        raise ContradictionException("Closed loop does not contain all circles")
-                    loop.add(coord)
-            start = coord
+    def evolve(self, cell_lines):
+        try:
+            line_segments = _extend_line_segments(self.line_segments, cell_lines)
+            seen = frozenset().union(*(seg.contains for seg in line_segments))
+            line_segments += _discover_line_segments(cell_lines, seen)
+        except LoopException as exc:
+            exc.validate_win(self.circles)
+            raise NotImplementedError("winning")
 
-            # Forward!
-            for coord in self._loop_path(coord, forward_dir):
-                loop.add(coord)
-            end = coord
-
-            seen |= loop
-            line_segments.append(LineSegment(start=start, end=end, contains=loop))
-
-        return tuple(line_segments)
-
-
-    def _loop_path(self, coord, direction):
-        x, y = coord
-        # while you've got somewhere to go, go there, poop out where you are,
-        # and figure out where to go next.
-        while direction:
-            x, y = direction.move(x, y)
-            yield x, y
-            direction = direction.opposite()
-            direction = self.cell_lines[x, y].other_out(direction)
+        return Board(
+            width=self.width,
+            height=self.height,
+            circles=self.circles,
+            cell_lines=cell_lines,
+            line_segments=line_segments,
+        )
 
     def _edges_at(self, x, y):
         edges = set()
@@ -343,13 +444,21 @@ class Board:
                     continue
                 positions.append((mx, my))
                 changes[mx, my] = new_cell
-        return Board(
-            width=self.width,
-            height=self.height,
-            circles=self.circles,
-            cell_lines=dict(cell_lookup),
-        )
+        return self.evolve(cell_lines=cell_lookup)
 
+
+class SwappableIterator:
+    def __init__(self, iterator):
+        self._iterator = iterator
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._iterator)
+
+    def swap(self, iterator):
+        self._iterator = iterator
 
 # solver shit
 

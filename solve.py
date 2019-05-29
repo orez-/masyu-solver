@@ -2,6 +2,7 @@ import collections
 import contextlib
 import dataclasses
 import enum
+import sys
 import textwrap
 
 import attr
@@ -618,6 +619,12 @@ def board_from_string(board_str):
     )
 
 
+def board_from_level(level_name):
+    with open(f"levels/{level_name}.masyu", "r") as file:
+        board_str = "".join(line for line in file if not line.startswith("#"))
+    return board_from_string(board_str)
+
+
 def print_board(board):
     board_str = []
     for y in range(board.height):
@@ -698,10 +705,8 @@ def solve(board):
     return None
 
 
-def main():
-    # < redacted >
-    board_str = ...
-    board = board_from_string(board_str)
+def main(level_name):
+    board = board_from_level(level_name)
     print(print_big_board(board))
     solved_board = solve(board)
     if solved_board:
@@ -709,4 +714,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(sys.argv[1])

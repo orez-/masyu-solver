@@ -4,13 +4,14 @@ import dataclasses
 import enum
 import sys
 import textwrap
+from unittest.mock import sentinel
 
 import attr
 import frozendict
 
 
-WHITE = object()
-BLACK = object()
+WHITE = sentinel.WHITE
+BLACK = sentinel.BLACK
 SYMBOL_LOOKUP = {'o': WHITE, '●': BLACK}
 
 
@@ -547,30 +548,6 @@ def solve_known_constraints(board):
     return board
 
 
-# def _next_guess(board):
-#     for (x, y), circle in board.circles.items():
-#         if circle not is BLACK:
-#             continue
-#         cell = board.cell_lines[x, y]
-#         for direction in cell.could_set():
-#             with contextlib.suppress(ContradictionException):
-#                 board = set_black_leg(board, x, y, direction)
-#                 yield solve_known_constraints(board)
-
-# {
-#     (x, y, d): {
-#         board: {
-#             (x, y, d): {
-#                 board:
-#             }
-#         }
-#     }
-# }
-
-# if a xyd group runs out of boards, nuke the parent board (but no further)
-# if a xyd group has one board, replace the parent board with that board.
-
-
 def _spot_direction_options(board, x, y, direction):
     with contextlib.suppress(ContradictionException):
         yield solve_known_constraints(board.set_direction(x, y, direction))
@@ -579,14 +556,37 @@ def _spot_direction_options(board, x, y, direction):
         yield solve_known_constraints(board.disallow_direction(x, y, direction))
 
 
-UNEXPLORED = object()
+UNEXPLORED = sentinel.UNEXPLORED
 
 
-def lookahead_solve(board):
-    board = solve_known_constraints(board)
+# PossibilityPair = Dict[Board, Union[List[PossibilityPair], UNEXPLORED]]
 
-    next_possibilities = {}
+
+def get_possibility_list(board):  # -> List[PossibilityPair]
+    # CURRENT BOARD
+
+    # - yes_board:
+    #     - yes_board
+    #       no_board
+    #   no_board
+    # - yes_board:
+    #   no_board
+
+    # ---
+
+    # When a possibility pair has one element, collapse its parent list into that element.
+    # That is, for `{foo: [{etc:, etc:}, {board: [etc]}], bar: [etc]}`, become
+    # `{board: [etc], bar: [etc]}`
+
+    # When a possibility pair has NO elements, raze its parent list.
+    # That is, for `{foo: [{etc:, etc:}, {}], bar: [etc]}`, become `{bar: [etc]}`
+
+    # ---
+
+    possibilities = []
+
     for (x, y), cell in board.cell_lines.items():
+        # print(x, y, cell)
         for direction in cell.could_set():
             boards = {
                 next_board: UNEXPLORED
@@ -596,9 +596,78 @@ def lookahead_solve(board):
                 next_board, = boards
                 return next_board
             if not boards:
-                raise ContradictionException
-            next_possibilities[x, y, direction] = boards
-    return next_possibilities
+                return []
+            possibilities.append(boards)
+    return possibilities
+
+
+class PossibilityTree:
+    def __init__(self, possibility_mapping, *, parent_tree=None, parent_board=None):
+        self._mapping = possibility_mapping
+        self._parent_tree = parent_tree
+        self._parent_board = parent_board
+
+    def find_unexplored(self):
+        queue = collections.deque([self])
+        while queue:
+            tree = queue.popleft()
+            for board, possibilities in tree._mapping.items():
+                if possibilities is UNEXPLORED:
+                    return tree, board
+                queue.extend(possibilities)
+
+    def set(self, board, value):
+        if isinstance(value, list):
+            possibilities = value
+            if possibilities:
+                self._mapping[board] = [
+                    PossibilityTree(
+                        pair,
+                        parent_tree=self,
+                        parent_board=board,
+                    )
+                    for pair in possibilities
+                ]
+            else:
+                # Empty list means contradiction.
+                # Burn down this whole branch.
+                self._mapping.pop(board, 0)
+                assert len(self._mapping) == 1, self
+                print("culling")
+        else:
+            # Singular board. This means given the parent board, the
+            # child board is necessarily more complete.
+            # Do NOT nest under the parent board. Instead, replace the
+            # parent with the child entirely.
+            new_board = value
+            self._mapping.pop(board, 0)
+            self._mapping[new_board] = UNEXPLORED
+
+    def __repr__(self):
+        return repr(self._mapping)
+
+
+def solve(board):
+    try:
+        base_board = solve_known_constraints(board)
+        possibility_space = PossibilityTree({base_board: UNEXPLORED})
+        print(print_big_board(base_board))
+
+        while True:
+            subtree, board = possibility_space.find_unexplored()
+            possibilities = get_possibility_list(board)
+            subtree.set(board, possibilities)
+
+            if len(possibility_space._mapping) == 1:
+                [board] = possibility_space._mapping
+                if board is not base_board:
+                    base_board = board
+                    print(print_big_board(base_board))
+            # print(possibility_space)
+
+    except SolvedException as exc:
+        return exc.board
+    return None
 
 
 # display shit
@@ -687,22 +756,6 @@ def print_big_board(board):
 
         board_str.append('\n')
     return ''.join(board_str)
-
-
-def solve(board):
-    try:
-        board = solve_known_constraints(board)
-        print(print_big_board(board))
-
-        next_board = lookahead_solve(board)
-        while not isinstance(next_board, dict):
-            board = next_board
-            print(print_big_board(board))
-            next_board = lookahead_solve(board)
-        # print(next_board)
-    except SolvedException as exc:
-        return exc.board
-    return None
 
 
 def main(level_name):

@@ -40,7 +40,7 @@ pub enum Direction {
 }
 
 impl Direction {
-    fn opposite(&self) -> Direction {
+    fn opposite(self) -> Direction {
         match self {
             Direction::Up => Direction::Down,
             Direction::Down => Direction::Up,
@@ -49,7 +49,7 @@ impl Direction {
         }
     }
 
-    fn walk(&self, coord: Coord) -> Coord {
+    fn walk(self, coord: Coord) -> Coord {
         let (dx, dy) = match self {
             Direction::Up => (0, -1 as i8),
             Direction::Down => (0, 1),
@@ -124,7 +124,7 @@ fn set_direction(cell_line: Rc<CellLine>, direction: Direction) -> Result<Rc<Cel
     else if cannot_set.len() == 2 {
         is_set = Direction::all_but(&cannot_set);
     }
-    return Ok(Rc::new(CellLine {is_set, cannot_set}))
+    Ok(Rc::new(CellLine {is_set, cannot_set}))
 }
 
 fn disallow_direction(cell_line: Rc<CellLine>, direction: Direction) -> Result<Rc<CellLine>, ContradictionException> {
@@ -147,15 +147,15 @@ fn disallow_direction(cell_line: Rc<CellLine>, direction: Direction) -> Result<R
     else if cannot_set.len() == 3 {
         cannot_set = Direction::all();
     }
-    return Ok(Rc::new(CellLine {is_set, cannot_set}))
+    Ok(Rc::new(CellLine {is_set, cannot_set}))
 }
 
 fn get_through(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionException> {
     let num_set = cell_line.is_set.len();
     if num_set == 2 {
         let mut ugh = cell_line.is_set.iter();
-        let one = ugh.next().unwrap().clone();
-        let other = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
+        let other = *ugh.next().unwrap();
         if one.opposite() != other {
             return Err(ContradictionException {message: format!("{:?} is already bent!", cell_line)});
         }
@@ -163,41 +163,41 @@ fn get_through(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExc
     }
     if num_set == 1 {
         let mut ugh = cell_line.is_set.iter();
-        let one = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
         return set_direction(cell_line, one.opposite());
     }
 
     let num_cannot_set = cell_line.cannot_set.len();
     if num_cannot_set == 1 {
         let mut ugh = cell_line.cannot_set.iter();
-        let one = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
         let cannot_set = frozenset! {one, one.opposite()};
         return Ok(Rc::new(CellLine {is_set: Direction::all_but(&cannot_set), cannot_set}));
     }
     if num_cannot_set == 2 {
         let is_set = Direction::all_but(&cell_line.cannot_set);
         let mut ugh = is_set.iter();
-        let one = ugh.next().unwrap().clone();
-        let other = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
+        let other = *ugh.next().unwrap();
         if one.opposite() != other {
             return Err(ContradictionException {message: format!("No straight path exists through {:?}", cell_line)});
         }
-        return Ok(Rc::new(CellLine {is_set: is_set, cannot_set: cell_line.cannot_set.clone()}));
+        return Ok(Rc::new(CellLine {is_set, cannot_set: cell_line.cannot_set.clone()}));
     }
     if num_cannot_set == 4 {
         return Err(ContradictionException {message: format!("{:?} must be blank", cell_line)});
     }
     assert!(num_cannot_set == 0, "expected no `cannot_set`, found {} ({:?})", num_cannot_set, cell_line.cannot_set);
     // We know nothing about this cell.
-    return Ok(cell_line)
+    Ok(cell_line)
 }
 
 fn get_bent(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionException> {  // 💁‍♀
     let num_set = cell_line.is_set.len();
     if num_set == 2 {
         let mut ugh = cell_line.is_set.iter();
-        let one = ugh.next().unwrap().clone();
-        let other = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
+        let other = *ugh.next().unwrap();
         if one.opposite() == other {
             return Err(ContradictionException {message: format!("{:?} is already straight-through!", cell_line)});
         }
@@ -205,21 +205,21 @@ fn get_bent(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExcept
     }
     if num_set == 1 {
         let mut ugh = cell_line.is_set.iter();
-        let one = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
         return disallow_direction(cell_line, one.opposite());
     }
 
     let num_cannot_set = cell_line.cannot_set.len();
     if num_cannot_set == 1 {
         let mut ugh = cell_line.cannot_set.iter();
-        let one = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
         return set_direction(cell_line, one.opposite());
     }
     if num_cannot_set == 2 {
         let is_set = Direction::all_but(&cell_line.cannot_set);
         let mut ugh = is_set.iter();
-        let one = ugh.next().unwrap().clone();
-        let other = ugh.next().unwrap().clone();
+        let one = *ugh.next().unwrap();
+        let other = *ugh.next().unwrap();
         if one.opposite() == other {
             return Err(ContradictionException {message: format!("No bent path exists through {:?}", cell_line)});
         }
@@ -229,7 +229,7 @@ fn get_bent(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExcept
         return Err(ContradictionException{message: format!("{:?} must be blank", cell_line)});
     }
 
-    return Ok(cell_line);
+    Ok(cell_line)
 }
 
 #[derive(Debug)]
@@ -247,7 +247,7 @@ fn set_direction_on_board(board: Rc<Board>, coord: Coord, direction: Direction) 
     if new_cell == old_cell {
         return Ok(board)
     }
-    return propagate_change(board, hashmap! {coord => new_cell})
+    propagate_change(board, hashmap! {coord => new_cell})
 }
 
 fn set_through(board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
@@ -256,7 +256,7 @@ fn set_through(board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, Contradictio
     if new_cell == old_cell {
         return Ok(board)
     }
-    return propagate_change(board, hashmap! {coord => new_cell})
+    propagate_change(board, hashmap! {coord => new_cell})
 }
 
 fn set_bent(board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
@@ -265,7 +265,7 @@ fn set_bent(board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionEx
     if new_cell == old_cell {
         return Ok(board)
     }
-    return propagate_change(board, hashmap! {coord => new_cell})
+    propagate_change(board, hashmap! {coord => new_cell})
 }
 
 fn chain_map_get<T: Eq + Hash, U>(maps: &[&HashMap<T, Rc<U>>], key: T) -> Option<Rc<U>> {
@@ -274,7 +274,7 @@ fn chain_map_get<T: Eq + Hash, U>(maps: &[&HashMap<T, Rc<U>>], key: T) -> Option
             return Some(elem.clone())
         }
     }
-    return None
+    None
 }
 
 fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>) -> Result<Rc<Board>, ContradictionException> {
@@ -288,7 +288,7 @@ fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>)
             let old_cell: Rc<CellLine> = chain_map_get(&[&changes, &board.cell_lines], mcoord).unwrap();
             let new_cell: Rc<CellLine> = set_direction(old_cell.clone(), direction.opposite())?;
             if new_cell == old_cell {continue}
-            positions.push_back(mcoord.clone());
+            positions.push_back(mcoord);
             changes.insert(mcoord, new_cell);
         }
 
@@ -326,8 +326,8 @@ fn apply_white(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, Contradi
     }
 
     let mut ugh = cell_set.iter();
-    let left = ugh.next().unwrap().clone();
-    let right = ugh.next().unwrap().clone();
+    let left = *ugh.next().unwrap();
+    let right = *ugh.next().unwrap();
     let left_coord = left.walk(coord);
     let bend_left = set_bent(board.clone(), left_coord);
     let right_coord = right.walk(coord);
@@ -344,7 +344,7 @@ fn apply_white(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, Contradi
 
     // We know something at this point though: only one may bend!
     // Bend that one!!
-    return bend_left.or(bend_right)
+    bend_left.or(bend_right)
 }
 
 fn apply_black(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
@@ -363,7 +363,7 @@ fn apply_black(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, Contradi
 
     let mut could_dirs = BTreeSet::new();
     for direction in cell.could_set() {
-        if let Ok(_) = set_black_leg(board.clone(), coord, direction) {
+        if set_black_leg(board.clone(), coord, direction).is_ok() {
             could_dirs.insert(direction);
         }
     }
@@ -379,7 +379,7 @@ fn apply_black(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, Contradi
 
 fn set_black_leg(mut board: Rc<Board>, coord: Coord, direction: Direction) -> Result<Rc<Board>, ContradictionException> {
     board = set_direction_on_board(board, coord, direction)?;
-    return set_through(board, direction.walk(coord));
+    set_through(board, direction.walk(coord))
 }
 
 fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
@@ -465,7 +465,7 @@ fn print_big_board(board: &Board) {
 
 fn board_from_string(board_str: String) -> Board {
     let mut circles = HashMap::new();
-    let lines = board_str.trim_end().split("\n").filter(|line| !line.starts_with("#")).collect::<Vec<_>>();
+    let lines = board_str.trim_end().split('\n').filter(|line| !line.starts_with('#')).collect::<Vec<_>>();
     for (y, line) in lines.iter().enumerate() {
         for (x, elem) in line.chars().enumerate() {
             match elem {
@@ -498,7 +498,7 @@ fn board_from_string(board_str: String) -> Board {
 
 fn board_from_level(level_name: String) -> Board {
     let raw_data = fs::read_to_string(format!("../levels/{}.masyu", level_name)).expect("Unable to read file");
-    return board_from_string(raw_data)
+    board_from_string(raw_data)
 }
 
 fn main() {

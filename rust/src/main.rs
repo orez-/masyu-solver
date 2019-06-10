@@ -1,5 +1,5 @@
 use std::collections::{HashMap, BTreeSet, VecDeque};
-use std::fmt;
+use std::env;
 use std::fs;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -69,12 +69,6 @@ impl Direction {
     }
 }
 
-impl fmt::Display for Direction {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        write!(formatter, "{}", self.to_string())
-    }
-}
-
 /// The attempted operation would result in a contradiction in board state!
 #[derive(Debug)]
 struct ContradictionException {message: String}
@@ -102,12 +96,22 @@ pub struct CellLine {
     cannot_set: BTreeSet<Direction>,
 }
 
+impl CellLine {
+    fn could_set(&self) -> BTreeSet<Direction> {
+        Direction::all_but(&self.is_set).difference(&self.cannot_set).cloned().collect()
+    }
+
+    fn is_done(&self) -> bool {
+        self.is_set.len() + self.cannot_set.len() == 4
+    }
+}
+
 fn set_direction(cell_line: Rc<CellLine>, direction: Direction) -> Result<Rc<CellLine>, ContradictionException> {
     if cell_line.is_set.contains(&direction) {
         return Ok(cell_line);
     }
     if cell_line.cannot_set.contains(&direction) {
-        return Err(ContradictionException {message: format!("Can't set {} on cell", direction)});
+        return Err(ContradictionException {message: format!("Can't set {:?} on cell", direction)});
     }
 
     let mut is_set = cell_line.is_set.clone();
@@ -128,12 +132,21 @@ fn disallow_direction(cell_line: Rc<CellLine>, direction: Direction) -> Result<R
         return Ok(cell_line);
     }
     if cell_line.is_set.contains(&direction) {
-        return Err(ContradictionException {message: format!("Can't disallow {} on cell", direction)});
+        return Err(ContradictionException {message: format!("Can't disallow {:?} on cell", direction)});
     }
 
     let mut cannot_set = cell_line.cannot_set.clone();
     cannot_set.insert(direction);
-    let is_set = cell_line.is_set.clone();
+    let mut is_set = cell_line.is_set.clone();
+
+    // Need to make sure there _should_ be a line here.
+    // Each cell does not necessarily contain a line!
+    if cannot_set.len() == 2 && is_set.len() == 1 {
+        is_set = Direction::all_but(&cannot_set);
+    }
+    else if cannot_set.len() == 3 {
+        cannot_set = Direction::all();
+    }
     return Ok(Rc::new(CellLine {is_set, cannot_set}))
 }
 
@@ -179,6 +192,46 @@ fn get_through(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExc
     return Ok(cell_line)
 }
 
+fn get_bent(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionException> {  // 💁‍♀
+    let num_set = cell_line.is_set.len();
+    if num_set == 2 {
+        let mut ugh = cell_line.is_set.iter();
+        let one = ugh.next().unwrap().clone();
+        let other = ugh.next().unwrap().clone();
+        if one.opposite() == other {
+            return Err(ContradictionException {message: format!("{:?} is already straight-through!", cell_line)});
+        }
+        return Ok(cell_line);
+    }
+    if num_set == 1 {
+        let mut ugh = cell_line.is_set.iter();
+        let one = ugh.next().unwrap().clone();
+        return disallow_direction(cell_line, one.opposite());
+    }
+
+    let num_cannot_set = cell_line.cannot_set.len();
+    if num_cannot_set == 1 {
+        let mut ugh = cell_line.cannot_set.iter();
+        let one = ugh.next().unwrap().clone();
+        return set_direction(cell_line, one.opposite());
+    }
+    if num_cannot_set == 2 {
+        let is_set = Direction::all_but(&cell_line.cannot_set);
+        let mut ugh = is_set.iter();
+        let one = ugh.next().unwrap().clone();
+        let other = ugh.next().unwrap().clone();
+        if one.opposite() == other {
+            return Err(ContradictionException {message: format!("No bent path exists through {:?}", cell_line)});
+        }
+        return Ok(Rc::new(CellLine {is_set, cannot_set: cell_line.cannot_set.clone()}));
+    }
+    if num_cannot_set == 4 {
+        return Err(ContradictionException{message: format!("{:?} must be blank", cell_line)});
+    }
+
+    return Ok(cell_line);
+}
+
 #[derive(Debug)]
 #[derive(Eq, PartialEq)]
 pub struct Board {
@@ -200,6 +253,15 @@ fn set_direction_on_board(board: Rc<Board>, coord: Coord, direction: Direction) 
 fn set_through(board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
     let old_cell = board.cell_lines.get(&coord).unwrap().clone();
     let new_cell = get_through(old_cell.clone())?;
+    if new_cell == old_cell {
+        return Ok(board)
+    }
+    return propagate_change(board, hashmap! {coord => new_cell})
+}
+
+fn set_bent(board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
+    let old_cell = board.cell_lines.get(&coord).unwrap().clone();
+    let new_cell = get_bent(old_cell.clone())?;
     if new_cell == old_cell {
         return Ok(board)
     }
@@ -258,31 +320,80 @@ fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>)
 fn apply_white(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
     board = set_through(board, coord)?;
 
-    // let cell_set = board.cell_lines.get(&coord).is_set
-    // if cell_set.len() != 2 {
-    //     return Ok(board);
-    // }
+    let cell_set = &board.cell_lines.get(&coord).unwrap().is_set;
+    if cell_set.len() != 2 {
+        return Ok(board);
+    }
 
-    Ok(board)
+    let mut ugh = cell_set.iter();
+    let left = ugh.next().unwrap().clone();
+    let right = ugh.next().unwrap().clone();
+    let left_coord = left.walk(coord);
+    let bend_left = set_bent(board.clone(), left_coord);
+    let right_coord = right.walk(coord);
+    let bend_right = set_bent(board.clone(), right_coord);
+
+    if bend_left.is_err() && bend_right.is_err() {
+        return Err(ContradictionException {message: format!("Cannot bend either end of the white circle at {:?}", coord)})
+    }
+
+    if bend_left.is_ok() && bend_right.is_ok() {
+        // We don't really know anything: either could bend.
+        return Ok(board);
+    }
+
+    // We know something at this point though: only one may bend!
+    // Bend that one!!
+    return bend_left.or(bend_right)
 }
 
 fn apply_black(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
+    board = set_bent(board, coord)?;
+    let dumb_ref = board.clone();  // rust doesn't let me inline this! wtf!
+    let cell = dumb_ref.cell_lines.get(&coord).unwrap();
+
+    // extend existing lines
+    for direction in cell.is_set.iter() {
+        board = set_through(board, direction.walk(coord))?;
+    }
+
+    if cell.is_done() {
+        return Ok(board);
+    }
+
+    let mut could_dirs = BTreeSet::new();
+    for direction in cell.could_set() {
+        if let Ok(_) = set_black_leg(board.clone(), coord, direction) {
+            could_dirs.insert(direction);
+        }
+    }
+
+    for direction in could_dirs.iter() {
+        if !could_dirs.contains(&direction.opposite()) {
+            board = set_black_leg(board, coord, *direction)?;
+        }
+    }
+
     Ok(board)
 }
 
-fn solve_known_constraints(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
-    let mut new_board = board;
+fn set_black_leg(mut board: Rc<Board>, coord: Coord, direction: Direction) -> Result<Rc<Board>, ContradictionException> {
+    board = set_direction_on_board(board, coord, direction)?;
+    return set_through(board, direction.walk(coord));
+}
+
+fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
     while {
-        let old_board = new_board.clone();
-        for (coord, circle) in new_board.clone().circles.iter() {
-            new_board = match circle {
-                CircleType::White => apply_white(new_board, *coord)?,
-                CircleType::Black => apply_black(new_board, *coord)?,
+        let old_board = board.clone();
+        for (coord, circle) in board.clone().circles.iter() {
+            board = match circle {
+                CircleType::White => apply_white(board, *coord)?,
+                CircleType::Black => apply_black(board, *coord)?,
             }
         }
-        old_board != new_board
+        old_board != board
     } {}
-    Ok(new_board)
+    Ok(board)
 }
 
 fn print_big_board(board: &Board) {
@@ -391,11 +502,8 @@ fn board_from_level(level_name: String) -> Board {
 }
 
 fn main() {
-    let mut board = Rc::new(board_from_level("741".to_string()));
+    let args: Vec<String> = env::args().collect();
+    let mut board = Rc::new(board_from_level(args[1].to_string()));
     board = solve_known_constraints(board).unwrap();
-    // board = set_direction_on_board(board, Coord {x: 0, y: 0}, Direction::Right).expect("oof");
-    // println!("{:?}", board.cell_lines.get(&Coord {x: 1, y: 0}));
-    // println!("{:?}", board.cell_lines.get(&Coord {x: 2, y: 0}));
-    // println!("{:?}", board.cell_lines.get(&Coord {x: 3, y: 0}));
     print_big_board(&board);
 }

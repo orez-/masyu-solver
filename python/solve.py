@@ -333,7 +333,7 @@ def _discover_line_segments(cell_lines, seen=()):
     return tuple(line_segments)
 
 
-@attr.s(frozen=True)
+@attr.s(frozen=True, repr=False)
 class Board:
     width: int = attr.ib()
     height: int = attr.ib()
@@ -449,6 +449,9 @@ class Board:
                 positions.append((mx, my))
                 changes[mx, my] = new_cell
         return self.evolve(cell_lines=cell_lookup)
+
+    def __repr__(self):
+        return "Board"
 
 
 class SwappableIterator:
@@ -689,7 +692,7 @@ def board_from_string(board_str):
 
 
 def board_from_level(level_name):
-    with open(f"levels/{level_name}.masyu", "r") as file:
+    with open(f"../levels/{level_name}.masyu", "r") as file:
         board_str = "".join(line for line in file if not line.startswith("#"))
     return board_from_string(board_str)
 

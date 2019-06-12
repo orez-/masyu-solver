@@ -29,6 +29,24 @@ macro_rules! frozenset(
     };
 );
 
+macro_rules! unpack1 {
+    ($iter:expr) => {
+        {
+            let mut iter = $iter.iter();
+            *iter.next().unwrap()
+        }
+    }
+}
+
+macro_rules! unpack2(
+    ($iter:expr) => {
+        {
+            let mut iter = $iter.iter();
+            (*iter.next().unwrap(), *iter.next().unwrap())
+        }
+    }
+);
+
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(Eq, PartialEq, Hash, PartialOrd, Ord)]
@@ -153,32 +171,26 @@ fn disallow_direction(cell_line: Rc<CellLine>, direction: Direction) -> Result<R
 fn get_through(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionException> {
     let num_set = cell_line.is_set.len();
     if num_set == 2 {
-        let mut ugh = cell_line.is_set.iter();
-        let one = *ugh.next().unwrap();
-        let other = *ugh.next().unwrap();
+        let (one, other) = unpack2!(cell_line.is_set);
         if one.opposite() != other {
             return Err(ContradictionException {message: format!("{:?} is already bent!", cell_line)});
         }
         return Ok(cell_line);
     }
     if num_set == 1 {
-        let mut ugh = cell_line.is_set.iter();
-        let one = *ugh.next().unwrap();
+        let one = unpack1!(cell_line.is_set);
         return set_direction(cell_line, one.opposite());
     }
 
     let num_cannot_set = cell_line.cannot_set.len();
     if num_cannot_set == 1 {
-        let mut ugh = cell_line.cannot_set.iter();
-        let one = *ugh.next().unwrap();
+        let one = unpack1!(cell_line.cannot_set);
         let cannot_set = frozenset! {one, one.opposite()};
         return Ok(Rc::new(CellLine {is_set: Direction::all_but(&cannot_set), cannot_set}));
     }
     if num_cannot_set == 2 {
         let is_set = Direction::all_but(&cell_line.cannot_set);
-        let mut ugh = is_set.iter();
-        let one = *ugh.next().unwrap();
-        let other = *ugh.next().unwrap();
+        let (one, other) = unpack2!(is_set);
         if one.opposite() != other {
             return Err(ContradictionException {message: format!("No straight path exists through {:?}", cell_line)});
         }
@@ -195,31 +207,25 @@ fn get_through(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExc
 fn get_bent(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionException> {  // 💁‍♀
     let num_set = cell_line.is_set.len();
     if num_set == 2 {
-        let mut ugh = cell_line.is_set.iter();
-        let one = *ugh.next().unwrap();
-        let other = *ugh.next().unwrap();
+        let (one, other) = unpack2!(cell_line.is_set);
         if one.opposite() == other {
             return Err(ContradictionException {message: format!("{:?} is already straight-through!", cell_line)});
         }
         return Ok(cell_line);
     }
     if num_set == 1 {
-        let mut ugh = cell_line.is_set.iter();
-        let one = *ugh.next().unwrap();
+        let one = unpack1!(cell_line.is_set);
         return disallow_direction(cell_line, one.opposite());
     }
 
     let num_cannot_set = cell_line.cannot_set.len();
     if num_cannot_set == 1 {
-        let mut ugh = cell_line.cannot_set.iter();
-        let one = *ugh.next().unwrap();
+        let one = unpack1!(cell_line.cannot_set);
         return set_direction(cell_line, one.opposite());
     }
     if num_cannot_set == 2 {
         let is_set = Direction::all_but(&cell_line.cannot_set);
-        let mut ugh = is_set.iter();
-        let one = *ugh.next().unwrap();
-        let other = *ugh.next().unwrap();
+        let (one, other) = unpack2!(is_set);
         if one.opposite() == other {
             return Err(ContradictionException {message: format!("No bent path exists through {:?}", cell_line)});
         }
@@ -279,8 +285,7 @@ fn chain_map_get<T: Eq + Hash, U>(maps: &[&HashMap<T, Rc<U>>], key: T) -> Option
 
 fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>) -> Result<Rc<Board>, ContradictionException> {
     let mut positions: VecDeque<Coord> = VecDeque::new();
-    let mut ugh = changes.keys();
-    positions.push_back(ugh.next().unwrap().clone());
+    positions.push_back(changes.keys().next().unwrap().clone());
     while let Some(coord) = positions.pop_front() {
         let cell = changes.get(&coord).unwrap().clone();
         for direction in cell.is_set.iter() {
@@ -325,9 +330,7 @@ fn apply_white(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, Contradi
         return Ok(board);
     }
 
-    let mut ugh = cell_set.iter();
-    let left = *ugh.next().unwrap();
-    let right = *ugh.next().unwrap();
+    let (left, right) = unpack2!(cell_set);
     let left_coord = left.walk(coord);
     let bend_left = set_bent(board.clone(), left_coord);
     let right_coord = right.walk(coord);

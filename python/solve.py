@@ -587,10 +587,11 @@ def get_possibility_list(board):  # -> List[PossibilityPair]
     # ---
 
     possibilities = []
+    mask = {Direction.Right, Direction.Down}
 
     for (x, y), cell in board.cell_lines.items():
         # print(x, y, cell)
-        for direction in cell.could_set():
+        for direction in cell.could_set() & mask:
             boards = {
                 next_board: UNEXPLORED
                 for next_board in _spot_direction_options(board, x, y, direction)
@@ -636,7 +637,6 @@ class PossibilityTree:
                 # Burn down this whole branch.
                 self._mapping.pop(board, 0)
                 assert len(self._mapping) == 1, self
-                print("culling")
         else:
             # Singular board. This means given the parent board, the
             # child board is necessarily more complete.

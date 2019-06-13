@@ -17,7 +17,7 @@ macro_rules! hashmap(
      };
 );
 
-macro_rules! frozenset(
+macro_rules! set(
     { $($key:expr),+ } => {
         {
             let mut m = ::std::collections::BTreeSet::new();
@@ -32,6 +32,7 @@ macro_rules! frozenset(
 macro_rules! unpack1 {
     ($iter:expr) => {
         {
+            assert!($iter.len() == 1, format!("Expected 1 value, found {}: {:?}", $iter.len(), $iter));
             let mut iter = $iter.iter();
             *iter.next().unwrap()
         }
@@ -41,6 +42,7 @@ macro_rules! unpack1 {
 macro_rules! unpack2(
     ($iter:expr) => {
         {
+            assert!($iter.len() == 2, format!("Expected 2 values, found {}: {:?}", $iter.len(), $iter));
             let mut iter = $iter.iter();
             (*iter.next().unwrap(), *iter.next().unwrap())
         }
@@ -79,7 +81,7 @@ impl Direction {
     }
 
     fn all() -> BTreeSet<Direction> {
-        frozenset! {Direction::Up, Direction::Down, Direction::Right, Direction::Left}
+        set! {Direction::Up, Direction::Down, Direction::Right, Direction::Left}
     }
 
     fn all_but(except: &BTreeSet<Direction>) -> BTreeSet<Direction> {
@@ -90,6 +92,15 @@ impl Direction {
 /// The attempted operation would result in a contradiction in board state!
 #[derive(Debug)]
 struct ContradictionException {message: String}
+
+#[derive(Debug)]
+struct LoopException (BTreeSet<Coord>);
+
+impl LoopException {
+    fn contains(&self, contains: &Coord) -> bool {
+        self.0.contains(contains)
+    }
+}
 
 #[derive(Debug)]
 #[derive(Clone, Copy)]
@@ -121,6 +132,16 @@ impl CellLine {
 
     fn is_done(&self) -> bool {
         self.is_set.len() + self.cannot_set.len() == 4
+    }
+
+    fn other_out(&self, direction: Direction) -> Option<Direction> {
+        if self.is_set.len() == 2 {
+            let (one, other) = unpack2!(self.is_set);
+            return Some(if direction == one {other}
+            else if direction == other {one}
+            else {panic!("missing direction");})
+        }
+        None
     }
 }
 
@@ -185,7 +206,7 @@ fn get_through(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExc
     let num_cannot_set = cell_line.cannot_set.len();
     if num_cannot_set == 1 {
         let one = unpack1!(cell_line.cannot_set);
-        let cannot_set = frozenset! {one, one.opposite()};
+        let cannot_set = set! {one, one.opposite()};
         return Ok(Rc::new(CellLine {is_set: Direction::all_but(&cannot_set), cannot_set}));
     }
     if num_cannot_set == 2 {
@@ -239,13 +260,114 @@ fn get_bent(cell_line: Rc<CellLine>) -> Result<Rc<CellLine>, ContradictionExcept
 }
 
 #[derive(Debug)]
-#[derive(Eq, PartialEq)]
-pub struct Board {
+struct LineSegment {
+    start: Coord,
+    start_direction: Direction,
+    end: Coord,
+    end_direction: Direction,
+    contains: BTreeSet<Coord>,
+}
+
+fn discover_line_segments(cell_lines: &HashMap<Coord, Rc<CellLine>>, mut seen: BTreeSet<Coord>) -> Result<Vec<Rc<LineSegment>>, LoopException> {
+    let mut line_segment = Vec::new();
+    for (coord, cell) in cell_lines {
+        if seen.contains(&coord) || cell.is_set.is_empty() {
+            continue;
+        }
+
+        let mut segment = set! {*coord};
+        // Backward, and check for closed loop.
+        // If there is no backward we're already at the start
+
+        let mut forward_dir: Direction;
+        let mut back_dir: Direction;
+        let mut start = *coord;
+        let mut end = *coord;
+        if cell.is_set.len() == 1 {
+            back_dir = unpack1!(cell.is_set);
+            forward_dir = back_dir;
+        }
+        else {
+            let (dumb, stupid) = unpack2!(cell.is_set);
+            forward_dir = dumb;
+            back_dir = stupid;
+
+            for (start_local, back_dir_local) in cell_path(*coord, back_dir, &cell_lines) {
+                start = start_local;
+                back_dir = back_dir_local;
+                if segment.contains(&start) {
+                    // We've got a closed loop! This is exceptional!
+                    // We're definitely either done or wrong.
+                    // Either way, stop what you're doing and say something!
+                    return Err(LoopException(segment));
+                }
+                segment.insert(start);
+            }
+        }
+
+        for (end_local, forward_dir_local) in cell_path(*coord, forward_dir, &cell_lines) {
+            end = end_local;
+            forward_dir = forward_dir_local;
+            segment.insert(end);
+        }
+
+        seen.append(&mut segment.clone());
+        line_segment.push(
+            Rc::new(LineSegment {
+                start,
+                start_direction: back_dir,
+                end,
+                end_direction: forward_dir,
+                contains: segment,
+            })
+        );
+    }
+    Ok(line_segment)
+}
+
+struct CellPath<'a> {
+    coord: Coord,
+    direction: Option<Direction>,
+    cell_lines: &'a HashMap<Coord, Rc<CellLine>>,
+}
+
+impl <'a> Iterator for CellPath<'a> {
+    type Item = (Coord, Direction);
+    fn next(&mut self) -> Option<(Coord, Direction)> {
+        let mut direction = self.direction?;
+        self.coord = direction.walk(self.coord);
+        direction = direction.opposite();
+        // yield coord, direction
+        let cell = self.cell_lines.get(&self.coord).unwrap();
+        self.direction = cell.other_out(direction);
+        Some((self.coord, direction))
+    }
+}
+
+fn cell_path(coord: Coord, direction: Direction, cell_lines: &HashMap<Coord, Rc<CellLine>>) -> CellPath {
+    CellPath {coord, direction: Some(direction), cell_lines}
+}
+
+#[derive(Debug)]
+struct Board {
     width: u8,
     height: u8,
+    // XXX since the lifetime of `circles` is Very Known (it's the lifetime of the solve),
+    // maybe this should/could be a reference instead of Rc'd
     circles: Rc<HashMap<Coord, CircleType>>,
     cell_lines: HashMap<Coord, Rc<CellLine>>,
+    line_segments: Vec<Rc<LineSegment>>,
 }
+
+impl PartialEq for Board {
+    fn eq(&self, rhs: &Self) -> bool {
+        // Technically we should check width, height, and circles to be sure,
+        // but realistically we're never going to compare two different puzzles
+        self.cell_lines == rhs.cell_lines
+    }
+}
+
+impl Eq for Board {}
 
 fn set_direction_on_board(board: Rc<Board>, coord: Coord, direction: Direction) -> Result<Rc<Board>, ContradictionException> {
     let old_cell = board.cell_lines.get(&coord).unwrap().clone();
@@ -309,11 +431,24 @@ fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>)
     }
     let cell_lines = board.cell_lines.clone().into_iter().chain(changes).collect();
 
+    let line_segments = match discover_line_segments(&cell_lines, BTreeSet::new()) {
+        Ok(segments) => segments,
+        Err(loop_path) => {
+            if !board.circles.keys().all(|coord| loop_path.contains(coord)) {
+                return Err(ContradictionException {message: "Closed loop does not contain all circles".to_string()});
+            }
+            // Otherwise, this is a victory!
+            // XXX: DENOTE VICTORY
+            Vec::new()
+        }
+    };
+
     Ok(Rc::new(Board {
         width: board.width,
         height: board.height,
         circles: board.circles.clone(),
         cell_lines,
+        line_segments,
     }))
     // evolve(board, changes)
 }
@@ -401,12 +536,12 @@ fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, Contradict
 
 fn print_big_board(board: &Board) {
     let inner_cell_line = hashmap! {
-        frozenset! {Direction::Down, Direction::Up} => "│",
-        frozenset! {Direction::Left, Direction::Right} => "─",
-        frozenset! {Direction::Left, Direction::Down} => "┐",
-        frozenset! {Direction::Left, Direction::Up} => "┘",
-        frozenset! {Direction::Right, Direction::Up} => "└",
-        frozenset! {Direction::Right, Direction::Down} => "┌"
+        set! {Direction::Down, Direction::Up} => "│",
+        set! {Direction::Left, Direction::Right} => "─",
+        set! {Direction::Left, Direction::Down} => "┐",
+        set! {Direction::Left, Direction::Up} => "┘",
+        set! {Direction::Right, Direction::Up} => "└",
+        set! {Direction::Right, Direction::Down} => "┌"
     };
     let gray = "\x1b[38;5;8m";
     let clear = "\x1b[0m";
@@ -496,7 +631,7 @@ fn board_from_string(board_str: String) -> Board {
         }
     }
 
-    Board {width, height, circles: Rc::new(circles), cell_lines}
+    Board {width, height, circles: Rc::new(circles), cell_lines, line_segments: Vec::new()}
 }
 
 fn board_from_level(level_name: String) -> Board {

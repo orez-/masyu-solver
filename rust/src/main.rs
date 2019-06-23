@@ -546,20 +546,42 @@ fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, Contradict
     Ok(board)
 }
 
+/// A board and all of its potential next states.
+/// If the board's next states are unexplored, None is kept instead.
+struct Lookahead {
+    board: Rc<Board>,
+    possibilities: Option<Vec<Possibility>>,
+}
+
+impl Lookahead {
+    fn new(board: Rc<Board>) -> Self {
+        Lookahead {board, possibilities: None}
+    }
+
+    fn is_unexplored(&self) -> bool {
+        self.possibilities.is_none()
+    }
+
+    fn explore(&mut self) {
+        assert!(self.possibilities.is_none());
+        match get_possibility_list(self.board.clone()) {
+            LookaheadOutcome::Certainty(new_board) => {self.board = new_board},
+            LookaheadOutcome::Possibilities(new_poss) => {self.possibilities = Some(new_poss)},
+            LookaheadOutcome::Contradiction => {unimplemented!()},
+        }
+    }
+}
+
 struct Possibility {
-    yes_board: Rc<Board>,
-    yes_possibilities: Option<Vec<Possibility>>,
-    no_board: Rc<Board>,
-    no_possibilities: Option<Vec<Possibility>>,
+    yes: Lookahead,
+    no: Lookahead,
 }
 
 impl Possibility {
     fn new(yes: Rc<Board>, no: Rc<Board>) -> Self {
         Possibility {
-            yes_board: yes,
-            yes_possibilities: None,
-            no_board: no,
-            no_possibilities: None,
+            yes: Lookahead::new(yes),
+            no: Lookahead::new(no),
         }
     }
 }
@@ -589,19 +611,15 @@ fn get_possibility_list(board: Rc<Board>) -> LookaheadOutcome {
     LookaheadOutcome::Possibilities(possibilities)
 }
 
-fn solve(mut board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
-    board = solve_known_constraints(board)?;
+fn solve(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
+    let mut root = Lookahead::new(solve_known_constraints(board)?);
     loop {
-        match get_possibility_list(board) {
-            LookaheadOutcome::Certainty(new_board) => {board = new_board},
-            LookaheadOutcome::Contradiction => {return Err(ContradictionException {message: "nope".to_string()})},
-            LookaheadOutcome::Possibilities(possibilities) => {unimplemented!()},
-        }
-        if board.solved {
-            return Ok(board)
+        root.explore();
+        if root.board.solved {
+            return Ok(root.board)
         }
         if cfg!(debug_assertions) {
-            print_big_board(&board);
+            print_big_board(&root.board);
         }
     }
 }

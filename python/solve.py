@@ -4,6 +4,7 @@ import dataclasses
 import enum
 import sys
 import textwrap
+import weakref
 from unittest.mock import sentinel
 
 import attr
@@ -562,10 +563,7 @@ def _spot_direction_options(board, x, y, direction):
 UNEXPLORED = sentinel.UNEXPLORED
 
 
-# PossibilityPair = Dict[Board, Union[List[PossibilityPair], UNEXPLORED]]
-
-
-def get_possibility_list(board):  # -> List[PossibilityPair]
+def get_possibility_list(lookahead):  # -> List[PossibilityPair]
     # CURRENT BOARD
 
     # - yes_board:
@@ -589,88 +587,141 @@ def get_possibility_list(board):  # -> List[PossibilityPair]
     possibilities = []
     mask = {Direction.Right, Direction.Down}
 
+    board = lookahead.board
     for (x, y), cell in board.cell_lines.items():
-        # print(x, y, cell)
         for direction in cell.could_set() & mask:
-            boards = {
-                next_board: UNEXPLORED
-                for next_board in _spot_direction_options(board, x, y, direction)
-            }
+            boards = list(_spot_direction_options(board, x, y, direction))
             if len(boards) == 1:
                 next_board, = boards
                 return next_board
             if not boards:
                 return []
-            possibilities.append(boards)
+            possibilities.append(PossibilityPair.new(*boards, parent=lookahead))
     return possibilities
 
 
-class PossibilityTree:
-    def __init__(self, possibility_mapping, *, parent_tree=None, parent_board=None):
-        self._mapping = possibility_mapping
-        self._parent_tree = parent_tree
-        self._parent_board = parent_board
+class Ref:
+    """oof"""
+    def __init__(self, value):
+        self.__ref__ = value
 
-    def find_unexplored(self):
-        queue = collections.deque([self])
-        while queue:
-            tree = queue.popleft()
-            for board, possibilities in tree._mapping.items():
-                if possibilities is UNEXPLORED:
-                    return tree, board
-                queue.extend(possibilities)
+    def __getattr__(self, key):
+        return getattr(self.__ref__, key)
 
-    def set(self, board, value):
-        if isinstance(value, list):
-            possibilities = value
-            if possibilities:
-                self._mapping[board] = [
-                    PossibilityTree(
-                        pair,
-                        parent_tree=self,
-                        parent_board=board,
-                    )
-                    for pair in possibilities
-                ]
-            else:
-                # Empty list means contradiction.
-                # Burn down this whole branch.
-                self._mapping.pop(board, 0)
-                assert len(self._mapping) == 1, self
+    def __setattr__(self, key, value):
+        if key == '__ref__':
+            object.__setattr__(self, key, value)
         else:
-            # Singular board. This means given the parent board, the
-            # child board is necessarily more complete.
-            # Do NOT nest under the parent board. Instead, replace the
-            # parent with the child entirely.
-            new_board = value
-            self._mapping.pop(board, 0)
-            self._mapping[new_board] = UNEXPLORED
+            setattr(self.__ref__, key, value)
 
     def __repr__(self):
-        return repr(self._mapping)
+        return f"Ref({self.__ref__})"
+
+
+@attr.s
+class Lookahead:
+    board = attr.ib()
+    possibilities = attr.ib()
+    parent = attr.ib()
+
+    @classmethod
+    def new(cls, board, parent=None):
+        if parent is not None:
+            parent = weakref.ref(parent)
+        return cls(board, possibilities=UNEXPLORED, parent=parent)
+
+    def get_sibling(self):
+        pos = self.parent()
+        assert pos
+        assert pos.yes.__ref__ == self or pos.no.__ref__ == self
+        return pos.no if pos.yes.__ref__ == self else pos.yes
+
+
+def explore(lookahead_ref):
+    queue = collections.deque([lookahead_ref])
+    while queue:
+        lookahead = queue.popleft()
+        if lookahead.possibilities is UNEXPLORED:
+            expand(lookahead)
+            return True
+        else:
+            for pos in lookahead.possibilities:
+                queue.append(pos.yes)
+                queue.append(pos.no)
+    return False
+
+
+def expand(lookahead_ref):
+    possibilities = get_possibility_list(lookahead_ref)
+    if not possibilities:
+        # Contradiction
+        if lookahead_ref.parent is None:
+            raise ContradictionException("root lookahead encountered contradiction")
+        sibling = lookahead_ref.get_sibling()
+        parent = lookahead_ref.parent().parent()
+        assert parent, "parent was gc'd??"
+        sibling.parent = parent.parent
+        parent.__ref__ = sibling.__ref__
+        if sibling.possibilities is not UNEXPLORED:
+            for pos in sibling.possibilities:
+                pos.parent = weakref.ref(parent)
+
+    elif isinstance(possibilities, list):
+        # Possibilities
+        lookahead_ref.possibilities = possibilities
+        assert 'possibilities' not in lookahead_ref.__dict__
+    else:
+        # Certainty
+        assert isinstance(possibilities, Board)
+        lookahead_ref.board = possibilities
+
+
+@attr.s
+class PossibilityPair:
+    yes = attr.ib()
+    no = attr.ib()
+    parent = attr.ib(converter=weakref.ref)
+
+    @classmethod
+    def new(cls, yes_board, no_board, *, parent):
+        self = cls(None, None, parent=parent)
+        self.yes = Ref(Lookahead.new(yes_board, parent=self))
+        self.no = Ref(Lookahead.new(no_board, parent=self))
+        return self
 
 
 def solve(board):
     try:
-        base_board = solve_known_constraints(board)
-        possibility_space = PossibilityTree({base_board: UNEXPLORED})
-        print(print_big_board(base_board))
+        root = Ref(Lookahead.new(solve_known_constraints(board)))
+        last_seen_board = root.board
+        print(print_big_board(root.board))
 
-        while True:
-            subtree, board = possibility_space.find_unexplored()
-            possibilities = get_possibility_list(board)
-            subtree.set(board, possibilities)
-
-            if len(possibility_space._mapping) == 1:
-                [board] = possibility_space._mapping
-                if board is not base_board:
-                    base_board = board
-                    print(print_big_board(base_board))
-            # print(possibility_space)
-
+        while explore(root):
+            # print the board if we learned something
+            if last_seen_board is not root.board:
+                print(print_big_board(root.board))
+                last_seen_board = root.board
     except SolvedException as exc:
         return exc.board
     return None
+
+
+def _validate_lookahead_state(root):
+    # print(root)
+    # validate the dang state
+    nodes = 0
+    q = collections.deque([root])
+    while q:
+        look = q.popleft()
+        if look.possibilities is not UNEXPLORED:
+            for pos in look.possibilities:
+                assert pos.parent() == look, (pos.parent(), look)
+                assert pos.yes.parent() == pos, (pos.yes.parent(), pos)
+                assert pos.no.parent() == pos, (pos.no.parent(), pos)
+                q.append(pos.yes)
+                q.append(pos.no)
+            nodes += len(look.possibilities)
+    print("validated", nodes, "nodes")
 
 
 # display shit

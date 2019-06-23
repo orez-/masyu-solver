@@ -357,6 +357,7 @@ struct Board {
     circles: Rc<HashMap<Coord, CircleType>>,
     cell_lines: HashMap<Coord, Rc<CellLine>>,
     line_segments: Vec<Rc<LineSegment>>,
+    solved: bool,
 }
 
 impl PartialEq for Board {
@@ -372,6 +373,15 @@ impl Eq for Board {}
 fn set_direction_on_board(board: Rc<Board>, coord: Coord, direction: Direction) -> Result<Rc<Board>, ContradictionException> {
     let old_cell = board.cell_lines.get(&coord).unwrap().clone();
     let new_cell = set_direction(old_cell.clone(), direction)?;
+    if new_cell == old_cell {
+        return Ok(board)
+    }
+    propagate_change(board, hashmap! {coord => new_cell})
+}
+
+fn disallow_direction_on_board(board: Rc<Board>, coord: Coord, direction: Direction) -> Result<Rc<Board>, ContradictionException> {
+    let old_cell = board.cell_lines.get(&coord).unwrap().clone();
+    let new_cell = disallow_direction(old_cell.clone(), direction)?;
     if new_cell == old_cell {
         return Ok(board)
     }
@@ -406,6 +416,7 @@ fn chain_map_get<T: Eq + Hash, U>(maps: &[&HashMap<T, Rc<U>>], key: T) -> Option
 }
 
 fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>) -> Result<Rc<Board>, ContradictionException> {
+    let mut solved = false;
     let mut positions: VecDeque<Coord> = VecDeque::new();
     positions.push_back(changes.keys().next().unwrap().clone());
     while let Some(coord) = positions.pop_front() {
@@ -438,7 +449,7 @@ fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>)
                 return Err(ContradictionException {message: "Closed loop does not contain all circles".to_string()});
             }
             // Otherwise, this is a victory!
-            // XXX: DENOTE VICTORY
+            solved = true;
             Vec::new()
         }
     };
@@ -449,6 +460,7 @@ fn propagate_change(board: Rc<Board>, mut changes: HashMap<Coord, Rc<CellLine>>)
         circles: board.circles.clone(),
         cell_lines,
         line_segments,
+        solved,
     }))
     // evolve(board, changes)
 }
@@ -534,6 +546,66 @@ fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, Contradict
     Ok(board)
 }
 
+struct Possibility {
+    yes_board: Rc<Board>,
+    yes_possibilities: Option<Vec<Possibility>>,
+    no_board: Rc<Board>,
+    no_possibilities: Option<Vec<Possibility>>,
+}
+
+impl Possibility {
+    fn new(yes: Rc<Board>, no: Rc<Board>) -> Self {
+        Possibility {
+            yes_board: yes,
+            yes_possibilities: None,
+            no_board: no,
+            no_possibilities: None,
+        }
+    }
+}
+
+enum LookaheadOutcome {
+    Possibilities(Vec<Possibility>),
+    Certainty(Rc<Board>),
+    Contradiction,
+}
+
+fn get_possibility_list(board: Rc<Board>) -> LookaheadOutcome {
+    let mut possibilities = Vec::new();
+    let mask = set! {Direction::Right, Direction::Down};
+    for (&coord, cell) in board.cell_lines.iter() {
+        for &direction in cell.could_set().intersection(&mask) {
+            match (
+                set_direction_on_board(board.clone(), coord, direction).and_then(solve_known_constraints),
+                disallow_direction_on_board(board.clone(), coord, direction).and_then(solve_known_constraints),
+            ) {
+                (Err(_), Err(_)) => {return LookaheadOutcome::Contradiction},
+                (Ok(yes), Ok(no)) => {possibilities.push(Possibility::new(yes, no))},
+                (Ok(yes), _) => {return LookaheadOutcome::Certainty(yes)},
+                (_, Ok(no)) => {return LookaheadOutcome::Certainty(no)},
+            }
+        }
+    }
+    LookaheadOutcome::Possibilities(possibilities)
+}
+
+fn solve(mut board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
+    board = solve_known_constraints(board)?;
+    loop {
+        match get_possibility_list(board) {
+            LookaheadOutcome::Certainty(new_board) => {board = new_board},
+            LookaheadOutcome::Contradiction => {return Err(ContradictionException {message: "nope".to_string()})},
+            LookaheadOutcome::Possibilities(possibilities) => {unimplemented!()},
+        }
+        if board.solved {
+            return Ok(board)
+        }
+        if cfg!(debug_assertions) {
+            print_big_board(&board);
+        }
+    }
+}
+
 fn print_big_board(board: &Board) {
     let inner_cell_line = hashmap! {
         set! {Direction::Down, Direction::Up} => "│",
@@ -615,7 +687,7 @@ fn board_from_string(board_str: String) -> Board {
         }
     }
 
-    let width = lines[0].len() as u8;
+    let width = lines[0].chars().count() as u8;
     let height = lines.len() as u8;
 
     let mut cell_lines = HashMap::new();
@@ -631,7 +703,7 @@ fn board_from_string(board_str: String) -> Board {
         }
     }
 
-    Board {width, height, circles: Rc::new(circles), cell_lines, line_segments: Vec::new()}
+    Board {width, height, circles: Rc::new(circles), cell_lines, line_segments: Vec::new(), solved: false}
 }
 
 fn board_from_level(level_name: String) -> Board {
@@ -642,6 +714,6 @@ fn board_from_level(level_name: String) -> Board {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut board = Rc::new(board_from_level(args[1].to_string()));
-    board = solve_known_constraints(board).unwrap();
+    board = solve(board).unwrap();
     print_big_board(&board);
 }

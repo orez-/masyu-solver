@@ -348,7 +348,6 @@ fn cell_path(coord: Coord, direction: Direction, cell_lines: &HashMap<Coord, Rc<
     CellPath {coord, direction: Some(direction), cell_lines}
 }
 
-#[derive(Debug)]
 struct Board {
     width: u8,
     height: u8,
@@ -369,6 +368,12 @@ impl PartialEq for Board {
 }
 
 impl Eq for Board {}
+
+impl std::fmt::Debug for Board {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "Board")
+    }
+}
 
 fn set_direction_on_board(board: Rc<Board>, coord: Coord, direction: Direction) -> Result<Rc<Board>, ContradictionException> {
     let old_cell = board.cell_lines.get(&coord).unwrap().clone();
@@ -548,6 +553,7 @@ fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, Contradict
 
 /// A board and all of its potential next states.
 /// If the board's next states are unexplored, None is kept instead.
+#[derive(Debug)]
 struct Lookahead {
     board: Rc<Board>,
     possibilities: Option<Vec<Possibility>>,
@@ -558,20 +564,58 @@ impl Lookahead {
         Lookahead {board, possibilities: None}
     }
 
-    fn is_unexplored(&self) -> bool {
-        self.possibilities.is_none()
+    fn explore(&mut self) -> bool {
+        let mut queue: VecDeque<&mut Lookahead> = VecDeque::new();
+        queue.push_back(self);
+        while let Some(lookahead) = queue.pop_front() {
+            if let Some(ref mut possibilities) = lookahead.possibilities {
+                for pos in possibilities {
+                    queue.push_back(&mut pos.yes);
+                    queue.push_back(&mut pos.no);
+                }
+            }
+            else {
+                lookahead.expand();
+                return true;
+            }
+        }
+        false
     }
 
-    fn explore(&mut self) {
+    fn expand(&mut self) {
         assert!(self.possibilities.is_none());
         match get_possibility_list(self.board.clone()) {
             LookaheadOutcome::Certainty(new_board) => {self.board = new_board},
             LookaheadOutcome::Possibilities(new_poss) => {self.possibilities = Some(new_poss)},
-            LookaheadOutcome::Contradiction => {unimplemented!()},
+            LookaheadOutcome::Contradiction => {
+                // Contradiction is BIG.
+                // Promote my sibling Lookahead to our Possibility's parent Lookahead
+                // That is:
+
+                // Lookahead-root:
+                //   - Possibility-1:
+                //       Lookahead-1-yes: CONTRADICTION
+                //       Lookahead-2-no: unexplored
+
+                // Becomes:
+
+                // Lookahead-2-no: unexplored
+
+                // ...now I just gotta figure out how to get Rust to do this
+                unimplemented!()
+            },
         }
     }
 }
 
+/// Observe a given board, coordinate, and direction.
+/// Extrapolate the state of the board if that coordinate and direction
+/// had a line and store the result in `yes`. Similarly, extrapolate if
+/// it definitely _did not_ have a line and store the result in `no`.
+///
+/// Note that the original board and the exact values of the coordinate
+/// and direction are irrelevant, and are not kept in this data structure.
+#[derive(Debug)]
 struct Possibility {
     yes: Lookahead,
     no: Lookahead,
@@ -614,7 +658,10 @@ fn get_possibility_list(board: Rc<Board>) -> LookaheadOutcome {
 fn solve(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
     let mut root = Lookahead::new(solve_known_constraints(board)?);
     loop {
-        root.explore();
+        if !root.explore() {
+            println!("Stuck!");
+            return Ok(root.board)
+        }
         if root.board.solved {
             return Ok(root.board)
         }

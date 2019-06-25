@@ -26,6 +26,14 @@ class Direction(enum.Enum):
         x, y = self.value
         return Direction((-x, -y))
 
+    def turn_right(self):
+        x, y = self.value
+        return Direction((-y, x))
+
+    def turn_left(self):
+        x, y = self.value
+        return Direction((y, -x))
+
     def move(self, x, y):
         dx, dy = self.value
         return (x + dx, y + dy)
@@ -724,6 +732,71 @@ def _validate_lookahead_state(root):
     print("validated", nodes, "nodes")
 
 
+def _solve_three_consecutive_whites(board, coord):
+    # ooo
+    x, y = coord
+    if board.circles.get((x + 1, y)) == board.circles.get((x + 2, y)) == WHITE:
+        board = board.set_direction(x, y, Direction.Up)
+        board = board.set_through(x, y)
+        board = board.set_through(x + 1, y)
+        board = board.set_through(x + 2, y)
+    elif board.circles.get((x, y + 1)) == board.circles.get((x, y + 2)) == WHITE:
+        board = board.set_direction(x, y, Direction.Right)
+        board = board.set_through(x, y)
+        board = board.set_through(x, y + 1)
+        board = board.set_through(x, y + 2)
+    return board
+
+
+def _solve_adjacent_blacks(board, coord):
+    # ●●
+    x, y = coord
+    if board.circles.get((x + 1, y)) == BLACK:
+        board = set_black_leg(board, x, y, Direction.Left)
+        board = set_black_leg(board, x + 1, y, Direction.Right)
+    if board.circles.get((x, y + 1)) == BLACK:
+        board = set_black_leg(board, x, y, Direction.Up)
+        board = set_black_leg(board, x, y + 1, Direction.Down)
+    return board
+
+
+def _solve_overlong_leg(board, coord):
+    # ●?oo
+    for direction in Direction:
+        first_white = direction.move(*direction.move(*coord))
+        next_white = direction.move(*first_white)
+        if board.circles.get(first_white) == board.circles.get(next_white) == WHITE:
+            board = set_black_leg(board, *coord, direction.opposite())
+    return board
+
+
+def _solve_wingman_black(board, coord):
+    # ?●?
+    # o?o
+    for direction in Direction:
+        ahead = direction.move(*coord)
+        left = direction.turn_left().move(*ahead)
+        right = direction.turn_right().move(*ahead)
+        if board.circles.get(left) == board.circles.get(right) == WHITE:
+            board = set_black_leg(board, *coord, direction.opposite())
+    return board
+
+
+def solve_initial_patterns(board):
+    """
+    Solve any small, one-time optimizations we can find
+    that might be expensive during the main solve.
+    """
+    for coord, color in board.circles.items():
+        if color == WHITE:
+            board = _solve_three_consecutive_whites(board, coord)
+        else:
+            board = _solve_overlong_leg(board, coord)
+            board = _solve_adjacent_blacks(board, coord)
+            board = _solve_wingman_black(board, coord)
+    return board
+
+
 # display shit
 
 
@@ -814,6 +887,8 @@ def print_big_board(board):
 
 def main(level_name):
     board = board_from_level(level_name)
+    print(print_big_board(board))
+    board = solve_initial_patterns(board)
     print(print_big_board(board))
     solved_board = solve(board)
     if solved_board:

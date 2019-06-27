@@ -1,0 +1,2 @@
+attrs==19.1.0
+frozendict==1.2

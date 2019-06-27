@@ -225,7 +225,7 @@ class LineSegment:
     start_direction: Direction = attr.ib()
     end: (int, int) = attr.ib()
     end_direction: Direction = attr.ib()
-    contains: frozenset = attr.ib(converter=frozenset)
+    contains: frozenset = attr.ib()
 
     def other_end(self, coord):
         if coord == self.start:
@@ -289,7 +289,7 @@ def _extend_line_segments(line_segments, cell_lines):
             changed_ends[f"{side}_direction"] = next_dir
 
         new_segs.append(
-            attr.evolve(segment, contains=loop, **changed_ends) if changed_ends else segment
+            attr.evolve(segment, contains=frozenset(loop), **changed_ends) if changed_ends else segment
         )
     return tuple(new_segs)
 
@@ -335,7 +335,7 @@ def _discover_line_segments(cell_lines, seen=()):
                 start_direction=back_dir,
                 end=end,
                 end_direction=forward_dir,
-                contains=loop,
+                contains=frozenset(loop),
             )
         )
 
@@ -346,25 +346,26 @@ def _discover_line_segments(cell_lines, seen=()):
 class Board:
     width: int = attr.ib()
     height: int = attr.ib()
-    circles: {(int, int): bool} = attr.ib(converter=frozendict.frozendict)
-    cell_lines: {(int, int): CellLine} = attr.ib(converter=frozendict.frozendict)
+    circles: {(int, int): bool} = attr.ib()
+    cell_lines: {(int, int): CellLine} = attr.ib()
     # Bookkeep-y list of line segments. Constructed from `cell_lines`,
     # but nice to track for optimization purposes.
     line_segments: [LineSegment] = attr.ib(cmp=False)
 
     @cell_lines.default
     def _(self):
-        return {
+        return frozendict.frozendict({
             (x, y): CellLine(is_set=frozenset(), cannot_set=self._edges_at(x, y))
             for y in range(self.height)
             for x in range(self.width)
-        }
+        })
 
     @line_segments.default
     def _(self):
         return _discover_line_segments(self.cell_lines)
 
     def evolve(self, cell_lines):
+        cell_lines = frozendict.frozendict(cell_lines)
         try:
             line_segments = _extend_line_segments(self.line_segments, cell_lines)
             seen = frozenset().union(*(seg.contains for seg in line_segments))
@@ -688,11 +689,11 @@ def expand(lookahead_ref):
 class PossibilityPair:
     yes = attr.ib()
     no = attr.ib()
-    parent = attr.ib(converter=weakref.ref)
+    parent = attr.ib()
 
     @classmethod
     def new(cls, yes_board, no_board, *, parent):
-        self = cls(None, None, parent=parent)
+        self = cls(None, None, parent=weakref.ref(parent))
         self.yes = Ref(Lookahead.new(yes_board, parent=self))
         self.no = Ref(Lookahead.new(no_board, parent=self))
         return self
@@ -806,12 +807,12 @@ def board_from_string(board_str):
     return Board(
         width=len(board_lines[0]),
         height=len(board_lines),
-        circles={
+        circles=frozendict.frozendict({
             (x, y): SYMBOL_LOOKUP[elem]
             for y, row in enumerate(board_lines)
             for x, elem in enumerate(row)
             if elem != '.'
-        },
+        }),
     )
 
 

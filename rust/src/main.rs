@@ -1,8 +1,10 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::hash::Hash;
-use std::rc::Rc;
+use std::mem;
+use std::rc::{Rc, Weak};
 
 
 macro_rules! hashmap(
@@ -556,56 +558,118 @@ fn solve_known_constraints(mut board: Rc<Board>) -> Result<Rc<Board>, Contradict
 #[derive(Debug)]
 struct Lookahead {
     board: Rc<Board>,
-    possibilities: Option<Vec<Possibility>>,
+    parent: Option<Weak<RefCell<PossibilityPair>>>,
+    possibilities: Option<Vec<Rc<RefCell<PossibilityPair>>>>,
 }
 
 impl Lookahead {
     fn new(board: Rc<Board>) -> Self {
-        Lookahead {board, possibilities: None}
+        Lookahead {board, parent: None, possibilities: None}
     }
+}
 
-    fn explore(&mut self) -> bool {
-        let mut queue: VecDeque<&mut Lookahead> = VecDeque::new();
-        queue.push_back(self);
-        while let Some(lookahead) = queue.pop_front() {
-            if let Some(ref mut possibilities) = lookahead.possibilities {
+
+fn explore(root_lookahead: &Rc<RefCell<Lookahead>>) -> bool {
+    let mut queue: VecDeque<Rc<RefCell<Lookahead>>> = VecDeque::new();
+    queue.push_back(root_lookahead.clone());
+    while let Some(lookahead) = queue.pop_front() {
+        // Need to explicitly drop this borrow in the `else` case so we can
+        // borrow_mut in `expand`. Not sure why the borrow would persist
+        // across to the `else` case but I assume the people who wrote Rust
+        // are smarter than me ᖍ(•⟝•)ᖌ
+        let lookahead_borrow = lookahead.borrow();
+        if let Some(ref possibilities) = lookahead_borrow.possibilities {
+            for pos in possibilities {
+                queue.push_back(pos.borrow().yes.clone());
+                queue.push_back(pos.borrow().no.clone());
+            }
+        }
+        else {
+            // Drop dem refs (see above)
+            mem::drop(queue);
+            mem::drop(lookahead_borrow);
+            expand(&lookahead);
+            return true;
+        };
+    }
+    false
+}
+
+fn expand(lookahead: &Rc<RefCell<Lookahead>>) {
+    assert!(lookahead.borrow().possibilities.is_none());
+    match get_possibility_list(lookahead) {
+        LookaheadOutcome::Certainty(new_board) => {lookahead.borrow_mut().board = new_board},
+        LookaheadOutcome::Possibilities(new_poss) => {lookahead.borrow_mut().possibilities = Some(new_poss)},
+        LookaheadOutcome::Contradiction => {
+            // Contradiction is BIG.
+            // Promote my sibling Lookahead to our PossibilityPair's parent Lookahead
+            // That is:
+
+            // Lookahead-root:
+            //   - PossibilityPair-1:
+            //       Lookahead-1-yes: CONTRADICTION
+            //       Lookahead-2-no: unexplored
+
+            // Becomes:
+
+            // Lookahead-2-no: unexplored
+            let sibling = get_sibling(lookahead).unwrap();  // TODO: handle contradiction
+            let grandparent = Weak::upgrade(&Weak::upgrade(&lookahead.borrow().parent.clone().unwrap()).unwrap().borrow().parent).unwrap();
+            sibling.borrow_mut().parent = (&*grandparent).borrow().parent.clone();
+
+            if let Some(ref possibilities) = sibling.borrow().possibilities {
                 for pos in possibilities {
-                    queue.push_back(&mut pos.yes);
-                    queue.push_back(&mut pos.no);
+                    pos.borrow_mut().parent = Rc::downgrade(&grandparent);
                 }
             }
+            // We're about to pull a reverse Get Out: putting `sibling`'s soul into `grandparent`'s body.
+            // Before we can get at the `sibling`'s soul we need to ensure we have the only strong
+            // reference to it, but the grandparent currently still refers to it. Fortunately since
+            // we're about to burn it all down anyway we can nuke that reference by burning down
+            // `grandparent`'s children explicitly.
+            // Note: the preceding comment contained spoilers for the movie Get Out.
+            grandparent.borrow_mut().possibilities = None;
+            grandparent.replace(Rc::try_unwrap(sibling).expect("dammit we got two Rc references").into_inner());
+        },
+    }
+}
+
+fn get_sibling(lookahead: &Rc<RefCell<Lookahead>>) -> Result<Rc<RefCell<Lookahead>>, ContradictionException> {
+    match lookahead.borrow().parent.clone() {
+        Some(parent_wrapper_hell) => {
+            let parent = Weak::upgrade(&parent_wrapper_hell).unwrap();
+            if Rc::ptr_eq(lookahead, &parent.borrow().yes) {
+                Ok(parent.borrow().no.clone())
+            }
+            else if Rc::ptr_eq(lookahead, &parent.borrow().no) {
+                Ok(parent.borrow().yes.clone())
+            }
             else {
-                lookahead.expand();
-                return true;
+                panic!("Lookahead's parent does not have it as a child. The heck??");
+            }
+        },
+        None => Err(ContradictionException {message: "root lookahead encountered contradiction".to_string()}),
+    }
+}
+
+fn get_possibility_list(lookahead: &Rc<RefCell<Lookahead>>) -> LookaheadOutcome {
+    let board = &lookahead.borrow().board;
+    let mut possibilities = Vec::new();
+    let mask = set! {Direction::Right, Direction::Down};
+    for (&coord, cell) in board.cell_lines.iter() {
+        for &direction in cell.could_set().intersection(&mask) {
+            match (
+                set_direction_on_board(board.clone(), coord, direction).and_then(solve_known_constraints),
+                disallow_direction_on_board(board.clone(), coord, direction).and_then(solve_known_constraints),
+            ) {
+                (Err(_), Err(_)) => {return LookaheadOutcome::Contradiction},
+                (Ok(yes), Ok(no)) => {possibilities.push(PossibilityPair::new(yes, no, &lookahead))},
+                (Ok(yes), _) => {return LookaheadOutcome::Certainty(yes)},
+                (_, Ok(no)) => {return LookaheadOutcome::Certainty(no)},
             }
         }
-        false
     }
-
-    fn expand(&mut self) {
-        assert!(self.possibilities.is_none());
-        match get_possibility_list(self.board.clone()) {
-            LookaheadOutcome::Certainty(new_board) => {self.board = new_board},
-            LookaheadOutcome::Possibilities(new_poss) => {self.possibilities = Some(new_poss)},
-            LookaheadOutcome::Contradiction => {
-                // Contradiction is BIG.
-                // Promote my sibling Lookahead to our Possibility's parent Lookahead
-                // That is:
-
-                // Lookahead-root:
-                //   - Possibility-1:
-                //       Lookahead-1-yes: CONTRADICTION
-                //       Lookahead-2-no: unexplored
-
-                // Becomes:
-
-                // Lookahead-2-no: unexplored
-
-                // ...now I just gotta figure out how to get Rust to do this
-                unimplemented!()
-            },
-        }
-    }
+    LookaheadOutcome::Possibilities(possibilities)
 }
 
 /// Observe a given board, coordinate, and direction.
@@ -616,57 +680,49 @@ impl Lookahead {
 /// Note that the original board and the exact values of the coordinate
 /// and direction are irrelevant, and are not kept in this data structure.
 #[derive(Debug)]
-struct Possibility {
-    yes: Lookahead,
-    no: Lookahead,
+struct PossibilityPair {
+    yes: Rc<RefCell<Lookahead>>,
+    no: Rc<RefCell<Lookahead>>,
+    parent: Weak<RefCell<Lookahead>>,
 }
 
-impl Possibility {
-    fn new(yes: Rc<Board>, no: Rc<Board>) -> Self {
-        Possibility {
-            yes: Lookahead::new(yes),
-            no: Lookahead::new(no),
-        }
+impl PossibilityPair {
+    fn new(yes_board: Rc<Board>, no_board: Rc<Board>, parent: &Rc<RefCell<Lookahead>>) -> Rc<RefCell<Self>> {
+        // Need to do a goofy dance here to get the pair to point to the lookaheads, and vice versa
+        let pair = Rc::new(RefCell::new(PossibilityPair {
+            yes: Rc::new(RefCell::new(Lookahead::new(yes_board))),
+            no: Rc::new(RefCell::new(Lookahead::new(no_board))),
+            parent: Rc::downgrade(parent),
+        }));
+        pair.borrow().yes.borrow_mut().parent = Some(Rc::downgrade(&pair));
+        pair.borrow().no.borrow_mut().parent = Some(Rc::downgrade(&pair));
+        pair
     }
 }
 
 enum LookaheadOutcome {
-    Possibilities(Vec<Possibility>),
+    Possibilities(Vec<Rc<RefCell<PossibilityPair>>>),
     Certainty(Rc<Board>),
     Contradiction,
 }
 
-fn get_possibility_list(board: Rc<Board>) -> LookaheadOutcome {
-    let mut possibilities = Vec::new();
-    let mask = set! {Direction::Right, Direction::Down};
-    for (&coord, cell) in board.cell_lines.iter() {
-        for &direction in cell.could_set().intersection(&mask) {
-            match (
-                set_direction_on_board(board.clone(), coord, direction).and_then(solve_known_constraints),
-                disallow_direction_on_board(board.clone(), coord, direction).and_then(solve_known_constraints),
-            ) {
-                (Err(_), Err(_)) => {return LookaheadOutcome::Contradiction},
-                (Ok(yes), Ok(no)) => {possibilities.push(Possibility::new(yes, no))},
-                (Ok(yes), _) => {return LookaheadOutcome::Certainty(yes)},
-                (_, Ok(no)) => {return LookaheadOutcome::Certainty(no)},
-            }
-        }
-    }
-    LookaheadOutcome::Possibilities(possibilities)
+fn _extract_board(lookahead: Rc<RefCell<Lookahead>>) -> Rc<Board> {
+    Rc::try_unwrap(lookahead).unwrap().into_inner().board
 }
 
+
 fn solve(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
-    let mut root = Lookahead::new(solve_known_constraints(board)?);
+    let root = Rc::new(RefCell::new(Lookahead::new(solve_known_constraints(board)?)));
     loop {
-        if !root.explore() {
+        if !explore(&root) {
             println!("Stuck!");
-            return Ok(root.board)
+            return Ok(_extract_board(root))
         }
-        if root.board.solved {
-            return Ok(root.board)
+        if root.borrow().board.solved {
+            return Ok(_extract_board(root))
         }
         if cfg!(debug_assertions) {
-            print_big_board(&root.board);
+            print_big_board(&*root.borrow().board);
         }
     }
 }

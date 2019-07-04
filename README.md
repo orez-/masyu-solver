@@ -27,12 +27,11 @@ Maybe I should double down and implement something like that for the Python vers
 
 ## Rust Implementation Todos
 
-The Rust version can currently solve boards that only require one step of lookahead.
-The release version of the code seems REAL fast which is promising, although it _has_ only been able to solve smaller, simpler boards so far.
+The Rust version is able to solve boards much quicker.
+One test board which solves in ~20 seconds with the Python solver is solved in 1 second with the Rust solver.
+Nevertheless, the 20x36 boards remain unacceptably slow to solve.
+Further optimizations are required.
 
-- The `Lookahead` + `Possibility` tree structure needs the ability to store mutable parent references, which is the Rust equivalent of asking someone to carry you to Mars real quick.
-Gotta figure out what the heck to do here.
-- Should implement the one-time peephole optimizations from the Python version.
 - The Python version does some extra work (for the modern definition of extra) to build off of existing paths between board states, which ideally cuts down on the time to reconstruct em.
 The code to accomplish this is Rust-hostile, but the Rust version might still see a performance benefit from a different implementation that accomplishes the same thing.
 Definitely worth benchmarking though: as mentioned, Rust is _already_ absurdly fast.

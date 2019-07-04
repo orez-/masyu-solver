@@ -71,6 +71,24 @@ impl Direction {
         }
     }
 
+    fn turn_left(self) -> Direction {
+        match self {
+            Direction::Up => Direction::Left,
+            Direction::Down => Direction::Right,
+            Direction::Right => Direction::Up,
+            Direction::Left => Direction::Down,
+        }
+    }
+
+    fn turn_right(self) -> Direction {
+        match self {
+            Direction::Up => Direction::Right,
+            Direction::Down => Direction::Left,
+            Direction::Right => Direction::Down,
+            Direction::Left => Direction::Up,
+        }
+    }
+
     fn walk(self, coord: Coord) -> Coord {
         let (dx, dy) = match self {
             Direction::Up => (0, -1 as i8),
@@ -569,7 +587,7 @@ impl Lookahead {
 }
 
 
-fn explore(root_lookahead: &Rc<RefCell<Lookahead>>) -> bool {
+fn explore(root_lookahead: &Rc<RefCell<Lookahead>>) -> Result<bool, ContradictionException> {
     let mut queue: VecDeque<Rc<RefCell<Lookahead>>> = VecDeque::new();
     queue.push_back(root_lookahead.clone());
     while let Some(lookahead) = queue.pop_front() {
@@ -588,14 +606,14 @@ fn explore(root_lookahead: &Rc<RefCell<Lookahead>>) -> bool {
             // Drop dem refs (see above)
             mem::drop(queue);
             mem::drop(lookahead_borrow);
-            expand(&lookahead);
-            return true;
+            expand(&lookahead)?;
+            return Ok(true);
         };
     }
-    false
+    Ok(false)
 }
 
-fn expand(lookahead: &Rc<RefCell<Lookahead>>) {
+fn expand(lookahead: &Rc<RefCell<Lookahead>>) -> Result<(), ContradictionException> {
     assert!(lookahead.borrow().possibilities.is_none());
     match get_possibility_list(lookahead) {
         LookaheadOutcome::Certainty(new_board) => {lookahead.borrow_mut().board = new_board},
@@ -613,7 +631,7 @@ fn expand(lookahead: &Rc<RefCell<Lookahead>>) {
             // Becomes:
 
             // Lookahead-2-no: unexplored
-            let sibling = get_sibling(lookahead).unwrap();  // TODO: handle contradiction
+            let sibling = get_sibling(lookahead)?;
             let grandparent = Weak::upgrade(&Weak::upgrade(&lookahead.borrow().parent.clone().unwrap()).unwrap().borrow().parent).unwrap();
             sibling.borrow_mut().parent = (&*grandparent).borrow().parent.clone();
 
@@ -632,6 +650,7 @@ fn expand(lookahead: &Rc<RefCell<Lookahead>>) {
             grandparent.replace(Rc::try_unwrap(sibling).expect("dammit we got two Rc references").into_inner());
         },
     }
+    Ok(())
 }
 
 fn get_sibling(lookahead: &Rc<RefCell<Lookahead>>) -> Result<Rc<RefCell<Lookahead>>, ContradictionException> {
@@ -711,10 +730,10 @@ fn _extract_board(lookahead: Rc<RefCell<Lookahead>>) -> Rc<Board> {
 }
 
 
-fn solve(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
+fn solve_lookaheads(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
     let root = Rc::new(RefCell::new(Lookahead::new(solve_known_constraints(board)?)));
     loop {
-        if !explore(&root) {
+        if !explore(&root)? {
             println!("Stuck!");
             return Ok(_extract_board(root))
         }
@@ -725,6 +744,88 @@ fn solve(board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
             print_big_board(&*root.borrow().board);
         }
     }
+}
+
+fn solve_three_consecutive_whites(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
+    // ooo
+    let right1 = Direction::Right.walk(coord);
+    let right2 = Direction::Right.walk(right1);
+    let down1 = Direction::Down.walk(coord);
+    let down2 = Direction::Down.walk(down1);
+    let white = Some(&CircleType::White);
+    if board.circles.get(&right1) == white && board.circles.get(&right2) == white {
+        board = set_direction_on_board(board, coord, Direction::Up)?;
+        board = set_through(board, coord)?;
+        board = set_through(board, right1)?;
+        board = set_through(board, right2)?;
+    }
+    else if board.circles.get(&down1) == white && board.circles.get(&down2) == white {
+        board = set_direction_on_board(board, coord, Direction::Right)?;
+        board = set_through(board, coord)?;
+        board = set_through(board, down1)?;
+        board = set_through(board, down2)?;
+    }
+    Ok(board)
+}
+
+fn solve_overlong_leg(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
+    // ●?oo
+    for direction in Direction::all() {
+        let first_white = direction.walk(direction.walk(coord));
+        let next_white = direction.walk(first_white);
+        let white = Some(&CircleType::White);
+        if board.circles.get(&first_white) == white && board.circles.get(&next_white) == white {
+            board = set_black_leg(board, coord, direction.opposite())?;
+        }
+    }
+    Ok(board)
+}
+
+fn solve_adjacent_blacks(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
+    // ●●
+    let down = Direction::Down.walk(coord);
+    let right = Direction::Right.walk(coord);
+    let black = Some(&CircleType::Black);
+    if board.circles.get(&right) == black {
+        board = set_black_leg(board, coord, Direction::Left)?;
+        board = set_black_leg(board, right, Direction::Right)?;
+    }
+    if board.circles.get(&down) == black {
+        board = set_black_leg(board, coord, Direction::Up)?;
+        board = set_black_leg(board, down, Direction::Down)?;
+    }
+    Ok(board)
+}
+
+fn solve_wingman_black(mut board: Rc<Board>, coord: Coord) -> Result<Rc<Board>, ContradictionException> {
+    // ?●?
+    // o?o
+    let white = Some(&CircleType::White);
+    for direction in Direction::all() {
+        let ahead = direction.walk(coord);
+        let left = direction.turn_left().walk(ahead);
+        let right = direction.turn_right().walk(ahead);
+        if board.circles.get(&left) == white && board.circles.get(&right) == white {
+            board = set_black_leg(board, coord, direction.opposite())?;
+        }
+    }
+    Ok(board)
+}
+
+fn solve_initial_patterns(mut board: Rc<Board>) -> Result<Rc<Board>, ContradictionException> {
+    for (coord, color) in board.clone().circles.iter() {
+        match color {
+            CircleType::White => {
+                board = solve_three_consecutive_whites(board, *coord)?;
+            },
+            CircleType::Black => {
+                board = solve_overlong_leg(board, *coord)?;
+                board = solve_adjacent_blacks(board, *coord)?;
+                board = solve_wingman_black(board, *coord)?;
+            },
+        }
+    }
+    Ok(board)
 }
 
 fn print_big_board(board: &Board) {
@@ -835,6 +936,7 @@ fn board_from_level(level_name: String) -> Board {
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut board = Rc::new(board_from_level(args[1].to_string()));
-    board = solve(board).unwrap();
+    board = solve_initial_patterns(board).unwrap();
+    board = solve_lookaheads(board).unwrap();
     print_big_board(&board);
 }
